@@ -49,6 +49,55 @@ services:
       timeout: 10s
       retries: 3
 
+  # Módulo de caché personalizado (para lógica de políticas)
+  cache-manager:
+    build: ./Cache
+    container_name: yahoo_cache_manager
+    environment:
+      - REDIS_HOST=cache
+      - CACHE_POLICY=${CACHE_POLICY}
+      - CACHE_SIZE=${CACHE_SIZE}
+      - CACHE_TTL=${CACHE_TTL}
+    depends_on:
+      cache:
+        condition: service_healthy
+    networks:
+      - yahoo_network
+
+  # Cliente LLM (Gemini API)
+  llm-client:
+    build: ./LLM_Client
+    container_name: yahoo_llm_client
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - REDIS_HOST=cache
+      - DB_HOST=database
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+    depends_on:
+      cache:
+        condition: service_healthy
+      database:
+        condition: service_healthy
+    networks:
+      - yahoo_network
+
+  # Módulo de evaluación de respuestas
+  scorer:
+    build: ./Scorer
+    container_name: yahoo_scorer
+    environment:
+      - DB_HOST=database
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+    depends_on:
+      database:
+        condition: service_healthy
+    networks:
+      - yahoo_network
+
   # Generador de tráfico
   generador-trafico:
     build: ./Generador_Trafico
@@ -64,11 +113,18 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - TRAFFIC_DISTRIBUTION=${TRAFFIC_DISTRIBUTION}
       - NUM_QUERIES=${NUM_QUERIES}
+      - CACHE_POLICY=${CACHE_POLICY}
     depends_on:
       database:
         condition: service_healthy
       cache:
         condition: service_healthy
+      cache-manager:
+        condition: service_started
+      llm-client:
+        condition: service_started
+      scorer:
+        condition: service_started
     networks:
       - yahoo_network
 
