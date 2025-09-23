@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # Módulo de descarga del dataset
+  descarga-dataset:
+    build: ./Descarga_Dataset
+    container_name: yahoo_descarga_dataset
+    volumes:
+      - dataset_volume:/data
+    environment:
+      - KAGGLE_USERNAME=${KAGGLE_USERNAME}
+      - KAGGLE_KEY=${KAGGLE_KEY}
+    restart: "no"
+    networks:
+      - yahoo_network
+
+  # Base de datos PostgreSQL
+  database:
+    build: ./Database
+    container_name: yahoo_database
+    environment:
+      - POSTGRES_DB=${DB_NAME}
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - database_volume:/var/lib/postgresql/data
+      - dataset_volume:/data
+    ports:
+      - "5432:5432"
+    networks:
+      - yahoo_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Servicio de caché Redis
+  cache:
+    image: redis:7-alpine
+    container_name: yahoo_cache
+    ports:
+      - "6379:6379"
+    networks:
+      - yahoo_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Generador de tráfico
+  generador-trafico:
+    build: ./Generador_Trafico
+    container_name: yahoo_generador_trafico
+    volumes:
+      - dataset_volume:/data
+    environment:
+      - DB_HOST=database
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - REDIS_HOST=cache
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - TRAFFIC_DISTRIBUTION=${TRAFFIC_DISTRIBUTION}
+      - NUM_QUERIES=${NUM_QUERIES}
+    depends_on:
+      database:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    networks:
+      - yahoo_network
+
+volumes:
+  dataset_volume:
+    driver: local
+  database_volume:
+    driver: local
+
+networks:
+  yahoo_network:
+    driver: bridge
