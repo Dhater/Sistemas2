@@ -10,9 +10,16 @@ services:
     environment:
       - KAGGLE_USERNAME=${KAGGLE_USERNAME}
       - KAGGLE_KEY=${KAGGLE_KEY}
+      - DB_HOST=database
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
     restart: "no"
     networks:
       - yahoo_network
+    depends_on:
+      database:
+        condition: service_healthy
 
   # Base de datos PostgreSQL
   database:
@@ -22,18 +29,21 @@ services:
       - POSTGRES_DB=${DB_NAME}
       - POSTGRES_USER=${DB_USER}
       - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_HOST_AUTH_METHOD=trust
     volumes:
       - database_volume:/var/lib/postgresql/data
       - dataset_volume:/data
+      - ./Database/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "5432:5432"
     networks:
       - yahoo_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   # Servicio de caché Redis
   cache:
@@ -45,9 +55,10 @@ services:
       - yahoo_network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # Módulo de caché personalizado (para lógica de políticas)
   cache-manager:
@@ -55,6 +66,7 @@ services:
     container_name: yahoo_cache_manager
     environment:
       - REDIS_HOST=cache
+      - REDIS_PORT=6379
       - CACHE_POLICY=${CACHE_POLICY}
       - CACHE_SIZE=${CACHE_SIZE}
       - CACHE_TTL=${CACHE_TTL}
@@ -63,6 +75,11 @@ services:
         condition: service_healthy
     networks:
       - yahoo_network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import redis; r = redis.Redis(host='cache'); r.ping()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # Cliente LLM (Gemini API)
   llm-client:
@@ -71,17 +88,26 @@ services:
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - REDIS_HOST=cache
+      - REDIS_PORT=6379
       - DB_HOST=database
       - DB_NAME=${DB_NAME}
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
+      - DB_PORT=5432
     depends_on:
       cache:
         condition: service_healthy
       database:
         condition: service_healthy
+      cache-manager:
+        condition: service_started
     networks:
       - yahoo_network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import psycopg2; conn = psycopg2.connect(host='database', dbname='${DB_NAME}', user='${DB_USER}', password='${DB_PASSWORD}'); conn.close()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # Módulo de evaluación de respuestas
   scorer:
@@ -92,11 +118,17 @@ services:
       - DB_NAME=${DB_NAME}
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
+      - DB_PORT=5432
     depends_on:
       database:
         condition: service_healthy
     networks:
       - yahoo_network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import psycopg2; conn = psycopg2.connect(host='database', dbname='${DB_NAME}', user='${DB_USER}', password='${DB_PASSWORD}'); conn.close()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # Generador de tráfico
   generador-trafico:
@@ -110,6 +142,7 @@ services:
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
       - REDIS_HOST=cache
+      - REDIS_PORT=6379
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - TRAFFIC_DISTRIBUTION=${TRAFFIC_DISTRIBUTION}
       - NUM_QUERIES=${NUM_QUERIES}
@@ -120,11 +153,11 @@ services:
       cache:
         condition: service_healthy
       cache-manager:
-        condition: service_started
+        condition: service_healthy
       llm-client:
-        condition: service_started
+        condition: service_healthy
       scorer:
-        condition: service_started
+        condition: service_healthy
     networks:
       - yahoo_network
 
