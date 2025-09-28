@@ -2,14 +2,23 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
-# Instalar dependencias del sistema necesarias para pandas y kaggle
-RUN apt-get update && apt-get install -y \
+# Dependencias del sistema para ruedas binarias y compilación cuando sea necesario
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
+    build-essential \
+    gfortran \
+    libopenblas-dev \
+    liblapack-dev \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Instalar pip/wheel primero y numpy antes de pandas para evitar incompatibilidades
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir numpy==1.25.1 \
+    && pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
 

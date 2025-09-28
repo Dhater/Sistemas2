@@ -1,3 +1,6 @@
-kagglehub[pandas-datasets]==0.2.0
+# No pongas numpy aquí porque la instalamos explícitamente en el Dockerfile antes de pandas
 pandas==2.0.3
+kagglehub[pandas-datasets]==0.2.0
 python-dotenv==1.0.0
+psycopg2-binary==2.9.10
+sqlalchemy==1.5.46
