@@ -1,6 +1,8 @@
 import os
 import pandas as pd
 from kaggle.api.kaggle_api_extended import KaggleApi
+import psycopg2
+from io import StringIO
 
 # Volumen compartido dentro del contenedor
 VOLUME_DIR = '/data'
@@ -9,6 +11,13 @@ DATASET_DIR = os.path.join(VOLUME_DIR, 'yahoo_dataset')
 
 # Carpeta local del proyecto
 LOCAL_CSV_PATH = os.path.join(os.getcwd(), 'yahoo_answers.csv')
+
+# Variables de entorno para PostgreSQL
+DB_HOST = os.environ.get("DB_HOST", "database")
+DB_NAME = os.environ.get("DB_NAME")
+DB_USER = os.environ.get("DB_USER")
+DB_PASS = os.environ.get("DB_PASSWORD")
+DB_PORT = os.environ.get("DB_PORT", "5432")
 
 def descargar_dataset(max_rows=30000):
     """Descarga el dataset de Kaggle y lo guarda en volumen y carpeta local, limitado a max_rows filas"""
@@ -58,19 +67,45 @@ def descargar_dataset(max_rows=30000):
 
     # Guardar CSV en volumen compartido y carpeta local
     df[['question_text', 'human_answer', 'llm_answer']].to_csv(
-        CSV_PATH_VOLUME, index=False, quoting=1,  # quoting=1 -> QUOTE_ALL
-        line_terminator='\n'
+        CSV_PATH_VOLUME, index=False, quoting=1, line_terminator='\n'
     )
     df[['question_text', 'human_answer', 'llm_answer']].to_csv(
-        LOCAL_CSV_PATH, index=False, quoting=1,
-        line_terminator='\n'
+        LOCAL_CSV_PATH, index=False, quoting=1, line_terminator='\n'
     )
 
     print("Dataset guardado en volumen:", CSV_PATH_VOLUME)
     print("Dataset también guardado en proyecto:", LOCAL_CSV_PATH)
     print(f"Tamaño: {len(df)} registros")
     print("Columnas:", df.columns.tolist())
+
     return df
 
+def insertar_en_postgres(df):
+    """Inserta las preguntas en PostgreSQL usando COPY desde un StringIO seguro"""
+    conn = psycopg2.connect(
+        host=DB_HOST,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASS,
+        port=DB_PORT
+    )
+    conn.autocommit = True
+    cur = conn.cursor()
+
+    # Crear un buffer CSV para COPY
+    buffer = StringIO()
+    df[['question_text', 'human_answer', 'llm_answer']].to_csv(
+        buffer, index=False, header=False, sep='\t', quoting=3
+    )
+    buffer.seek(0)
+
+    print("Insertando datos en PostgreSQL...")
+    cur.copy_from(buffer, 'questions', sep='\t', columns=('question_text', 'human_answer', 'llm_answer'))
+    print(f"Se insertaron {len(df)} filas en la tabla questions")
+
+    cur.close()
+    conn.close()
+
 if __name__ == "__main__":
-    descargar_dataset()
+    df = descargar_dataset(max_rows=30000)
+    insertar_en_postgres(df)
