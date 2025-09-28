@@ -1,79 +1,76 @@
-# app.py
 import os
 import pandas as pd
-from kagglehub import KaggleDatasetAdapter
-import kagglehub
-import psycopg2
-from io import StringIO
+from kaggle.api.kaggle_api_extended import KaggleApi
 
-DB_HOST = os.environ.get("DB_HOST", "database")
-DB_NAME = os.environ.get("DB_NAME")
-DB_USER = os.environ.get("DB_USER")
-DB_PASS = os.environ.get("DB_PASSWORD")
-DB_PORT = os.environ.get("DB_PORT", "5432")
+# Volumen compartido dentro del contenedor
+VOLUME_DIR = '/data'
+CSV_PATH_VOLUME = os.path.join(VOLUME_DIR, 'yahoo_answers.csv')
+DATASET_DIR = os.path.join(VOLUME_DIR, 'yahoo_dataset')
 
-CSV_PATH = '/data/yahoo_answers.csv'
+# Carpeta local del proyecto
+LOCAL_CSV_PATH = os.path.join(os.getcwd(), 'yahoo_answers.csv')
 
-def descargar_dataset():
-    df = kagglehub.load_dataset(
-        KaggleDatasetAdapter.PANDAS,
-        "jarupula/yahoo-answers-dataset",
-        ""
+def descargar_dataset(max_rows=30000):
+    """Descarga el dataset de Kaggle y lo guarda en volumen y carpeta local, limitado a max_rows filas"""
+    os.makedirs(DATASET_DIR, exist_ok=True)
+    
+    api = KaggleApi()
+    api.authenticate()  # requiere KAGGLE_USERNAME y KAGGLE_KEY en el entorno
+
+    print("Descargando dataset de Kaggle...")
+    api.dataset_download_files(
+        'jarupula/yahoo-answers-dataset',
+        path=DATASET_DIR,
+        unzip=True
     )
-    df.to_csv(CSV_PATH, index=False)
-    print("Dataset descargado y guardado:", CSV_PATH)
+    
+    # Buscar CSV descargado
+    archivos_csv = [f for f in os.listdir(DATASET_DIR) if f.endswith('.csv')]
+    if not archivos_csv:
+        raise FileNotFoundError(f"No se encontró ningún CSV en {DATASET_DIR}")
+    
+    csv_descargado = os.path.join(DATASET_DIR, archivos_csv[0])
+
+    # Cargar CSV en pandas (sin cabecera)
+    df = pd.read_csv(
+        csv_descargado,
+        header=None,
+        quotechar='"',
+        doublequote=True,
+        keep_default_na=False,
+        dtype=str
+    )
+
+    # Normalizar columnas
+    if df.shape[1] >= 4:
+        df.columns = ['id', 'question_title', 'question_body', 'human_answer'] + [f'col{i}' for i in range(4, df.shape[1])]
+        df['question_text'] = df['question_title'].fillna('') + ' ' + df['question_body'].fillna('')
+    else:
+        df.columns = ['question_text', 'human_answer'] + [f'col{i}' for i in range(2, df.shape[1])]
+        df['question_text'] = df['question_text'].fillna('')
+
+    # Evitar valores nulos
+    df['human_answer'] = df['human_answer'].fillna('')
+    df['llm_answer'] = ''
+
+    # Limitar a las primeras max_rows filas
+    df = df.head(max_rows)
+
+    # Guardar CSV en volumen compartido y carpeta local
+    df[['question_text', 'human_answer', 'llm_answer']].to_csv(
+        CSV_PATH_VOLUME, index=False, quoting=1,  # quoting=1 -> QUOTE_ALL
+        line_terminator='\n'
+    )
+    df[['question_text', 'human_answer', 'llm_answer']].to_csv(
+        LOCAL_CSV_PATH, index=False, quoting=1,
+        line_terminator='\n'
+    )
+
+    print("Dataset guardado en volumen:", CSV_PATH_VOLUME)
+    print("Dataset también guardado en proyecto:", LOCAL_CSV_PATH)
     print(f"Tamaño: {len(df)} registros")
     print("Columnas:", df.columns.tolist())
     return df
 
-def csv_to_postgres_copy(csv_path, table_name='questions', chunk_size=50000):
-    conn = psycopg2.connect(host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASS, port=DB_PORT)
-    conn.autocommit = True
-    cur = conn.cursor()
-
-    # Ajusta estos nombres según las columnas reales del CSV
-    # Ejemplo común: 'question' y 'best_answer' o 'answer'
-    # Mapearemos a los campos (question_text, human_answer, llm_answer)
-    for chunk in pd.read_csv(csv_path, chunksize=chunk_size):
-        # Normalizar columnas: elegir las columnas existentes
-        if 'question' in chunk.columns:
-            chunk['question_text'] = chunk['question']
-        elif 'question_title' in chunk.columns:
-            chunk['question_text'] = chunk['question_title']
-        elif 'question_body' in chunk.columns:
-            chunk['question_text'] = chunk['question_body']
-        else:
-            # si no hay columna reconocida, crea a partir de la primera columna
-            chunk['question_text'] = chunk.iloc[:, 0].astype(str)
-
-        # intentar encontrar respuesta humana en columnas conocidas
-        if 'best_answer' in chunk.columns:
-            chunk['human_answer'] = chunk['best_answer'].fillna('')
-        elif 'answer' in chunk.columns:
-            chunk['human_answer'] = chunk['answer'].fillna('')
-        else:
-            # Si no hay respuesta, dejamos campo vacío para no violar NOT NULL
-            chunk['human_answer'] = ''
-
-        # llm_answer vacío al inicio
-        chunk['llm_answer'] = ''
-
-        # Seleccionamos sólo las columnas que vamos a insertar
-        to_insert = chunk[['question_text', 'human_answer', 'llm_answer']].astype(str)
-
-        # Usar COPY FROM con StringIO
-        buffer = StringIO()
-        to_insert.to_csv(buffer, index=False, header=False, sep='\t', quoting=3)  # quoting=3 -> csv.QUOTE_NONE
-        buffer.seek(0)
-
-        # COPY ... FROM STDIN con columnas especificadas
-        cur.copy_from(buffer, table_name, sep='\t', null='', columns=('question_text','human_answer','llm_answer'))
-        print(f"Insertado chunk de {len(to_insert)} filas")
-
-    cur.close()
-    conn.close()
-
 if __name__ == "__main__":
-    df = descargar_dataset()
-    # Omitir descarga si ya existe CSV: si no quieres descargar otra vez, comenta la línea anterior.
-    csv_to_postgres_copy(CSV_PATH)
+    descargar_dataset()

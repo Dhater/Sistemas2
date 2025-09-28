@@ -2,24 +2,26 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
-# Dependencias del sistema para ruedas binarias y compilación cuando sea necesario
+# Dependencias del sistema
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     build-essential \
-    gfortran \
-    libopenblas-dev \
-    liblapack-dev \
-    pkg-config \
+    unzip \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Copiar requirements y app
 COPY requirements.txt .
+COPY app.py .
 
-# Instalar pip/wheel primero y numpy antes de pandas para evitar incompatibilidades
+# Instalar pip y librerías
 RUN python -m pip install --upgrade pip setuptools wheel \
-    && pip install --no-cache-dir numpy==1.25.1 \
+    && pip install --no-cache-dir cython numpy==1.25.1 \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+# Variables de entorno para Kaggle
+ENV KAGGLE_USERNAME=${KAGGLE_USERNAME}
+ENV KAGGLE_KEY=${KAGGLE_KEY}
 
 CMD ["python", "app.py"]

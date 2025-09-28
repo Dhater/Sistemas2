@@ -61,7 +61,7 @@ Thumbs.db
 .ipynb_checkpoints
 
 # Data files (si decides no versionar los datasets)
-# data/
+local_data
 # *.csv
 # *.json
 
