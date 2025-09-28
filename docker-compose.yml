@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # Módulo de descarga del dataset
+  # Módulo de descarga del dataset (arranca por defecto)
   descarga-dataset:
     build: ./Descarga_Dataset
     container_name: yahoo_descarga_dataset
@@ -21,7 +21,7 @@ services:
       database:
         condition: service_healthy
 
-  # Base de datos PostgreSQL
+  # Base de datos PostgreSQL (arranca por defecto)
   database:
     build: ./Database
     container_name: yahoo_database
@@ -45,7 +45,7 @@ services:
       retries: 5
       start_period: 30s
 
-  # Servicio de caché Redis
+  # Servicio de caché Redis (arranca por defecto)
   cache:
     image: redis:7-alpine
     container_name: yahoo_cache
@@ -60,10 +60,11 @@ services:
       retries: 5
       start_period: 10s
 
-  # Módulo de caché personalizado (para lógica de políticas)
+  # Módulo de caché personalizado (manual)
   cache-manager:
     build: ./Cache
     container_name: yahoo_cache_manager
+    profiles: ["manual"]
     environment:
       - REDIS_HOST=cache
       - REDIS_PORT=6379
@@ -81,10 +82,11 @@ services:
       timeout: 10s
       retries: 3
 
-  # Cliente LLM (Gemini API)
+  # Cliente LLM (Gemini API) (manual)
   llm-client:
     build: ./LLM_Client
     container_name: yahoo_llm_client
+    profiles: ["manual"]
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - REDIS_HOST=cache
@@ -109,10 +111,11 @@ services:
       timeout: 10s
       retries: 3
 
-  # Módulo de evaluación de respuestas
+  # Módulo de evaluación de respuestas (manual)
   scorer:
     build: ./Scorer
     container_name: yahoo_scorer
+    profiles: ["manual"]
     environment:
       - DB_HOST=database
       - DB_NAME=${DB_NAME}
@@ -130,10 +133,11 @@ services:
       timeout: 10s
       retries: 3
 
-  # Generador de tráfico
+  # Generador de tráfico (manual)
   generador-trafico:
     build: ./Generador_Trafico
     container_name: yahoo_generador_trafico
+    profiles: ["manual"]
     volumes:
       - dataset_volume:/data
     environment:
