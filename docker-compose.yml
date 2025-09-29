@@ -83,7 +83,7 @@ services:
     volumes:
       - ./local_data:/data  # JSON se guardará aquí
     environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - REDIS_HOST=cache
       - REDIS_PORT=6379
       - DB_HOST=database
@@ -130,7 +130,11 @@ services:
       - DB_PASSWORD=${DB_PASSWORD}
       - REDIS_HOST=cache
       - REDIS_PORT=6379
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_API_KEY1=${GEMINI_API_KEY1}
+      - GEMINI_API_KEY2=${GEMINI_API_KEY2}
+      - GEMINI_API_KEY3=${GEMINI_API_KEY3}
+      - GEMINI_API_KEY4=${GEMINI_API_KEY4}
+      - GEMINI_API_KEY5=${GEMINI_API_KEY5}
       - TRAFFIC_DISTRIBUTION=${TRAFFIC_DISTRIBUTION}
       - NUM_QUERIES=${NUM_QUERIES}
       - CACHE_POLICY=${CACHE_POLICY}
