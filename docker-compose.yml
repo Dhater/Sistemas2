@@ -79,7 +79,6 @@ services:
   llm-client:
     build: ./LLM_Client
     container_name: yahoo_llm_client
-    profiles: ["manual"]
     volumes:
       - ./local_data:/data  # JSON se guardará aquí
     environment:

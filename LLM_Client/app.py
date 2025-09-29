@@ -24,6 +24,10 @@ TARGET_TOTAL = int(os.getenv("TARGET_TOTAL", "20000"))
 EXPORT_CSV_PATH = os.getenv("EXPORT_CSV_PATH", "/data/questions_backup.csv")
 LOCAL_JSON_PATH = "./local_data/responses.json"
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "5"))  # Número de threads simultáneos
+# Volumen compartido dentro del contenedor
+VOLUME_DIR = '/data'
+CSV_PATH_VOLUME = os.path.join(VOLUME_DIR, 'yahoo_answers.csv')
+DATASET_DIR = os.path.join(VOLUME_DIR, 'yahoo_dataset')
 
 
 class LLMClient:
@@ -109,6 +113,18 @@ class LLMClient:
                 logger.warning(f"Intento {attempt+1}/5 fallo al conectar BD: {e}")
                 time.sleep(5)
         raise Exception("No se pudo conectar a la base de datos")
+    
+
+    def get_processed_count(self) -> int:
+        """Devuelve la cantidad de preguntas que ya tienen respuesta en la BD."""
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM questions WHERE llm_answer IS NOT NULL")
+                count = cur.fetchone()[0]
+                return count
+        finally:
+            self._put_conn(conn)
 
     def _get_conn(self):
         if hasattr(self, "pool") and self.pool:
@@ -243,7 +259,9 @@ class LLMClient:
     # Run batches con threads
     # ---------------------------
     def run_batches(self, batch_size: int = 20, max_questions: int = 150000):
-        processed_count = 0
+        processed_count = 0  # Solo para esta ejecución
+        total_done = self.get_processed_count()  # Cuántas preguntas ya tienen respuesta
+
         while processed_count < max_questions:
             questions = self.get_next_questions(limit=batch_size)
             if not questions:
@@ -256,7 +274,7 @@ class LLMClient:
                 self.cache_answer(q, ans)
                 self._save_to_local_json(q, ans)
                 processed_count += 1
-                logger.info(f"📝 Procesada pregunta {processed_count}/{max_questions}")
+                logger.info(f"📝 Procesada pregunta {total_done + processed_count}/{total_done + max_questions}")
 
         logger.info("🏁 Run_batches finalizado")
 
@@ -280,6 +298,12 @@ class LLMClient:
 
 
 def main():
+    while not os.path.exists(CSV_PATH_VOLUME):
+        print(f"Esperando a que se cree el CSV en {CSV_PATH_VOLUME}...")
+        time.sleep(5)  # espera 5 segundos antes de chequear otra vez
+
+    print("CSV encontrado, iniciando procesamiento...")
+
     client = LLMClient()
     client.run_batches(batch_size=20, max_questions=30000)
     client.export_db_to_csv()
