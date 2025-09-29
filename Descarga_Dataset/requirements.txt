@@ -1,6 +1,18 @@
-pandas==2.0.3
-kaggle==1.5.16
-python-dotenv==1.0.0
-psycopg2-binary==2.9.10
-SQLAlchemy==1.4.49
-packaging==23.1
+# Pandas 2.x (nuevas APIs y mejor compatibilidad con Python 3.11)
+pandas>=2.0,<3.0
+
+# Cliente Kaggle
+kaggle>=1.5
+
+# Manejo de variables de entorno (útil)
+python-dotenv>=1.0
+
+# Driver Postgres - binary evita compilar siempre
+psycopg2-binary>=2.9
+
+# Optional: si usas sqlalchemy en alguna parte
+SQLAlchemy>=1.4,<2.0
+
+# Dependencias comunes
+numpy>=1.24
+packaging>=23.0

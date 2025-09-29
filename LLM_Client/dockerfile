@@ -1,10 +1,23 @@
-FROM python:3.9-slim
+# Usar Python 3.11 slim
+FROM python:3.11-slim
 
+# Establecer directorio de trabajo
 WORKDIR /app
 
+# Copiar archivos de dependencias
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
+# Instalar dependencias del sistema necesarias para psycopg2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        libpq-dev \
+        build-essential \
+    && pip install --no-cache-dir -r requirements.txt \
+    && apt-get purge -y --auto-remove gcc build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar el código de la app
 COPY app.py .
 
+# Comando por defecto
 CMD ["python", "app.py"]

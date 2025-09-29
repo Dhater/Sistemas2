@@ -1,27 +1,35 @@
-FROM python:3.9-slim
+# Usa una versión moderna de Python
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Dependencias del sistema
+# Dependencias del sistema necesarias para pandas/psycopg2 y otros paquetes
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     gcc \
     g++ \
-    build-essential \
+    libpq-dev \
+    libssl-dev \
     unzip \
     curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copiar requirements y app
-COPY requirements.txt .
-COPY app.py .
+# Copiar requirements y todo el proyecto (mejor que sólo app.py)
+COPY requirements.txt /app/requirements.txt
+COPY . /app
 
-# Instalar pip y librerías
+# Mejorar pip y luego instalar dependencias
 RUN python -m pip install --upgrade pip setuptools wheel \
-    && pip install --no-cache-dir cython numpy==1.25.1 \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r /app/requirements.txt
 
-# Variables de entorno para Kaggle
+# Variables de entorno para Kaggle (puedes sobrescribirlas en docker run)
 ENV KAGGLE_USERNAME=${KAGGLE_USERNAME}
 ENV KAGGLE_KEY=${KAGGLE_KEY}
+ENV DB_HOST=${DB_HOST}
+ENV DB_NAME=${DB_NAME}
+ENV DB_USER=${DB_USER}
+ENV DB_PASSWORD=${DB_PASSWORD}
+ENV DB_PORT=${DB_PORT:-5432}
 
 CMD ["python", "app.py"]
