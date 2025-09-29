@@ -28,11 +28,16 @@ MAX_WORKERS = int(os.getenv("MAX_WORKERS", "5"))  # Número de threads simultán
 
 class LLMClient:
     def __init__(self):
-        self.api_key = os.getenv("OPENROUTER_API_KEY")
-        if not self.api_key:
+        # ---------------------------
+        # Manejo de múltiples API keys
+        # ---------------------------
+        raw_keys = os.getenv("OPENROUTER_API_KEY", "")
+        self.api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+        if not self.api_keys:
             raise ValueError("No se encontró OPENROUTER_API_KEY en el entorno")
-        self.client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=self.api_key)
-        logger.info("✅ Cliente Grok/OpenRouter inicializado correctamente")
+        self.api_key_index = 0
+        self._init_client()
+        logger.info(f"✅ Cliente Grok/OpenRouter inicializado con {len(self.api_keys)} API keys")
 
         # Redis
         self.redis_client = redis.Redis(
@@ -78,7 +83,7 @@ class LLMClient:
             self.local_data = {}
 
     # ---------------------------
-    # Conexión DB y pool
+    # Manejo señales y DB
     # ---------------------------
     def _graceful_shutdown(self, signum, frame):
         logger.info("Recibido señal de terminación, cerrando...")
@@ -136,23 +141,27 @@ class LLMClient:
             logger.warning(f"⚠ No se pudo escribir en Redis: {e}")
 
     # ---------------------------
-    # DB helpers (batch insert)
+    # DB helpers
     # ---------------------------
-    def save_questions_batch(self, data: List[tuple]):
+    def save_question_answer_to_db(self, question: str, llm_answer: str, human_answer: str = ""):
         conn = self._get_conn()
         try:
             with conn.cursor() as cur:
-                cur.executemany(
-                    """
-                    INSERT INTO questions (question_text, human_answer, llm_answer)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (question_text) DO UPDATE SET llm_answer = EXCLUDED.llm_answer
-                    """,
-                    data
-                )
+                cur.execute("SELECT id FROM questions WHERE question_text=%s LIMIT 1", (question,))
+                existing = cur.fetchone()
+                if existing:
+                    cur.execute(
+                        "UPDATE questions SET llm_answer=%s, human_answer=COALESCE(%s, human_answer) WHERE id=%s",
+                        (llm_answer, human_answer or "", existing[0])
+                    )
+                else:
+                    cur.execute(
+                        "INSERT INTO questions (question_text, human_answer, llm_answer) VALUES (%s,%s,%s)",
+                        (question, human_answer or "", llm_answer)
+                    )
             conn.commit()
         except Exception as e:
-            logger.exception("Error guardando batch QA en DB: %s", e)
+            logger.exception("Error guardando QA en DB: %s", e)
             try:
                 conn.rollback()
             except Exception:
@@ -166,6 +175,16 @@ class LLMClient:
             with conn.cursor() as cur:
                 cur.execute("SELECT question_text FROM questions WHERE llm_answer IS NULL LIMIT %s", (limit,))
                 return [r[0] for r in cur.fetchall()]
+        finally:
+            self._put_conn(conn)
+
+    def get_human_answer_from_db(self, question: str) -> Optional[str]:
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT human_answer FROM questions WHERE question_text=%s LIMIT 1", (question,))
+                row = cur.fetchone()
+                return row[0] if row else ""
         finally:
             self._put_conn(conn)
 
@@ -184,8 +203,16 @@ class LLMClient:
             logger.warning(f"⚠ No se pudo escribir JSON local: {e}")
 
     # ---------------------------
-    # Llamadas concurrentes al LLM
+    # Cliente OpenRouter con rotación de keys
     # ---------------------------
+    def _init_client(self):
+        key = self.api_keys[self.api_key_index]
+        self.client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=key)
+
+    def _rotate_key(self):
+        self.api_key_index = (self.api_key_index + 1) % len(self.api_keys)
+        self._init_client()
+
     def _query_grok(self, question: str) -> tuple:
         try:
             completion = self.client.chat.completions.create(
@@ -197,6 +224,10 @@ class LLMClient:
             content = getattr(msg, "content", None) or msg.get("content") if msg else getattr(choice, "text", None) or choice.get("text") if isinstance(choice, dict) else None
             ans = json.dumps(content, ensure_ascii=False) if isinstance(content, (list, dict)) else str(content or "")
         except Exception as e:
+            if "401" in str(e):
+                logger.warning(f"⚠ API key inválida, rotando key y reintentando: {self.api_keys[self.api_key_index]}")
+                self._rotate_key()
+                return self._query_grok(question)  # reintento con la siguiente key
             ans = f"Error: {e}"
         return question, ans.strip()
 
@@ -209,7 +240,7 @@ class LLMClient:
         return responses
 
     # ---------------------------
-    # Run batches optimizado
+    # Run batches con threads
     # ---------------------------
     def run_batches(self, batch_size: int = 20, max_questions: int = 150000):
         processed_count = 0
@@ -220,20 +251,17 @@ class LLMClient:
                 break
 
             responses = self.get_answers_from_grok_batch(questions)
-            data_to_save = []
             for q, ans in responses:
-                data_to_save.append((q, "", ans))  # human_answer vacío por ahora
+                self.save_question_answer_to_db(q, ans)
                 self.cache_answer(q, ans)
                 self._save_to_local_json(q, ans)
                 processed_count += 1
                 logger.info(f"📝 Procesada pregunta {processed_count}/{max_questions}")
 
-            self.save_questions_batch(data_to_save)
-
         logger.info("🏁 Run_batches finalizado")
 
     # ---------------------------
-    # Consola y export
+    # Export CSV
     # ---------------------------
     def export_db_to_csv(self, file_path: str = EXPORT_CSV_PATH):
         conn = self._get_conn()
