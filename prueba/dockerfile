@@ -1,0 +1,25 @@
+# Usar Python 3.11 slim
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Evitar problemas de locales UTF-8
+ENV LANG=C.UTF-8
+
+# Copiar requirements e instalar dependencias
+COPY requirements.txt .
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libpq-dev curl \
+    && pip install --no-cache-dir -r requirements.txt \
+    && apt-get purge -y --auto-remove gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar el script
+COPY app.py .
+
+# Crear carpeta de datos si no existe
+RUN mkdir -p /data
+
+# Comando por defecto
+CMD ["python", "app.py"]

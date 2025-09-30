@@ -63,7 +63,6 @@ services:
   cache-manager:
     build: ./Cache
     container_name: yahoo_cache_manager
-    profiles: ["manual"]
     environment:
       - REDIS_HOST=cache
       - REDIS_PORT=6379
@@ -77,28 +76,33 @@ services:
       - yahoo_network
 
   llm-client:
-    build: ./LLM_Client
-    container_name: yahoo_llm_client
-    volumes:
-      - ./local_data:/data  # JSON se guardará aquí
-    environment:
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - REDIS_HOST=cache
-      - REDIS_PORT=6379
-      - DB_HOST=database
-      - DB_NAME=${DB_NAME}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - DB_PORT=5432
-    depends_on:
-      cache:
-        condition: service_healthy
-      database:
-        condition: service_healthy
-      cache-manager:
-        condition: service_started
-    networks:
-      - yahoo_network
+      build:
+        context: ./llm_client
+      container_name: llm_client
+      profiles: ["manual"]
+      volumes:
+        - ./local_data:/data
+      env_file:
+        - .env
+      environment:
+        - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+        - MODEL=${MODEL}
+        - CSV_PATH=${CSV_PATH}
+        - LOCAL_JSON_PATH=${LOCAL_JSON_PATH}
+        - DB_HOST=${DB_HOST}
+        - DB_PORT=${DB_PORT}
+        - DB_NAME=${DB_NAME}
+        - DB_USER=${DB_USER}
+        - DB_PASSWORD=${DB_PASSWORD}
+        - REDIS_HOST=${REDIS_HOST}
+        - REDIS_PORT=${REDIS_PORT}
+        - MAX_WORKERS=${MAX_WORKERS}
+        - BATCH_SIZE=${BATCH_SIZE}
+      depends_on:
+        - database
+        - cache
+      restart: "no"
+
 
   scorer:
     build: ./Scorer
@@ -150,7 +154,37 @@ services:
         condition: service_healthy
     networks:
       - yahoo_network
-
+  prueba:
+    build:
+      context: ./prueba   # Carpeta donde está tu script para pruebas
+    container_name: llm_client_pruebas
+    volumes:
+      - ./prueba:/app      # Monta la carpeta de pruebas dentro del contenedor
+      - ./local_data:/data # Para CSV y JSON de backup
+    env_file:
+      - .env
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - MODEL=${MODEL}
+      - CSV_PATH=/data/yahoo_answers.csv
+      - LOCAL_JSON_PATH=/data/responses.json
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - MAX_WORKERS=${MAX_WORKERS}
+      - BATCH_SIZE=${BATCH_SIZE}
+    depends_on:
+      database:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - yahoo_network       # 🔹 añadir esta línea
 volumes:
   dataset_volume:
     driver: local
