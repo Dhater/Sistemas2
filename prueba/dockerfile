@@ -3,10 +3,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Evitar problemas de locales UTF-8
 ENV LANG=C.UTF-8
 
-# Copiar requirements e instalar dependencias
 COPY requirements.txt .
 
 RUN apt-get update \
@@ -15,11 +13,9 @@ RUN apt-get update \
     && apt-get purge -y --auto-remove gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copiar el script
-COPY app.py .
+COPY . .
 
-# Crear carpeta de datos si no existe
 RUN mkdir -p /data
 
-# Comando por defecto
-CMD ["python", "app.py"]
+# ✅ Ejecutar uvicorn para mantener FastAPI corriendo
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

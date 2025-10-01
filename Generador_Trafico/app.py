@@ -1,28 +1,21 @@
 import os
 import time
-import json
-import pandas as pd
 import numpy as np
 import redis
 import psycopg2
-from datetime import datetime
-import requests
 from itertools import cycle
+import requests
 
 # 🔹 Ejecutar ingresar.py antes de nada
 import ingresar
-ingresar.main()  # ejecutar la función main() de ingresar.py
+ingresar.main()
 
 # 🔹 Configurar Grok
-GROK_KEYS = os.getenv("OPENROUTER_API_KEY", "").split(",")  # múltiples keys separadas por coma
+GROK_KEYS = os.getenv("OPENROUTER_API_KEY", "").split(",")
 api_keys_cycle = cycle(GROK_KEYS)
 session = requests.Session()
 
 def call_grok(prompt, max_retries=3, base_wait=2):
-    """
-    Llamada no recursiva a la API; rota keys y hace backoff.
-    Devuelve texto (tal cual) o lanza excepción si no hay respuesta.
-    """
     tried = 0
     last_exc = None
     while tried < max_retries:
@@ -47,72 +40,74 @@ def call_grok(prompt, max_retries=3, base_wait=2):
         except Exception as e:
             last_exc = e
             tried += 1
-            wait = base_wait * tried
-            print(f"Error con key {key}: {e}. Reintentando en {wait}s (intento {tried}/{max_retries})")
-            time.sleep(wait)
+            time.sleep(base_wait * tried)
     raise RuntimeError(f"Todas las reintentos fallaron: {last_exc}")
 
-# 🔹 Intentar saludo a Grok y guardar estado en JSON
-def grok_saludo():
-    salida = {"status": "failed", "message": ""}
-    try:
-        respuesta = call_grok("Hola Grok! ¿Puedes saludarme y decir si estás online?")
-        salida["status"] = "success"
-        salida["message"] = respuesta
-    except Exception as e:
-        salida["message"] = str(e)
-
-    # Guardar JSON
-    output_path = "/data/grok_status.json"
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(salida, f, ensure_ascii=False, indent=2)
-    print(f"📄 Estado de Grok guardado en {output_path}")
-
-# 🔹 Clase de generación de tráfico
-class TrafficGenerator:
+class TrafficGeneratorDB:
     def __init__(self):
-        self.df = pd.read_csv('/data/yahoo_answers.csv')
         self.redis_client = redis.Redis(
-            host=os.getenv('REDIS_HOST', 'cache'), 
-            port=6379, 
+            host=os.getenv('REDIS_HOST', 'cache'),
+            port=int(os.getenv('REDIS_PORT', 6379)),
             decode_responses=True
         )
-        self.db_conn = psycopg2.connect(
+        # Limpiar cache al inicio
+        self.redis_client.flushdb()
+        self.conn = psycopg2.connect(
             host=os.getenv('DB_HOST', 'database'),
             database=os.getenv('DB_NAME', 'yahoo_qa'),
             user=os.getenv('DB_USER', 'postgres'),
             password=os.getenv('DB_PASSWORD', 'password123')
         )
-        
-    def poisson_distribution(self, lambda_param=1.0):
-        return np.random.poisson(lambda_param)
-    
-    def uniform_distribution(self, min_time=0.1, max_time=2.0):
-        return np.random.uniform(min_time, max_time)
-    
-    def get_random_question(self):
-        return self.df.sample(n=1).iloc[0]
-    
-    def simulate_traffic(self):
-        distribution = os.getenv('TRAFFIC_DISTRIBUTION', 'poisson')
-        num_queries = int(os.getenv('NUM_QUERIES', 10000))
-        
+        self.conn.autocommit = True
+        self.hits = 0
+        self.misses = 0
+        self.logs = []  # Aquí guardamos todo
+
+    def simulate_traffic(self, num_queries=100, key_range=(1, 5000)):
         for i in range(num_queries):
-            wait_time = self.poisson_distribution() if distribution == 'poisson' else self.uniform_distribution()
-            time.sleep(wait_time)
-            
-            question_data = self.get_random_question()
-            question = question_data['Question']
-            human_answer = question_data['Answer']
-            
-            print(f"Query {i}: {question[:100]}...")
-            
-        print("Simulación de tráfico completada")
+            random_id = np.random.randint(key_range[0], key_range[1]+1)
+            cache_key = f"question:{random_id}"
+
+            cached = self.redis_client.get(cache_key)
+            if cached:
+                self.hits += 1
+                question_text = cached
+                hit_status = True
+            else:
+                self.misses += 1
+                with self.conn.cursor() as cur:
+                    cur.execute("SELECT question_text, llm_answer FROM questions WHERE id = %s", (random_id,))
+                    row = cur.fetchone()
+                    if row:
+                        question_text, llm_answer = row
+                        if not llm_answer:
+                            llm_answer = call_grok(question_text)
+                            cur.execute(
+                                "UPDATE questions SET llm_answer = %s, evaluated_at = NOW() WHERE id = %s", 
+                                (llm_answer, random_id)
+                            )
+                        self.redis_client.set(cache_key, llm_answer)
+                        question_text = llm_answer
+                    else:
+                        question_text = None
+                hit_status = False
+
+            # Guardar en logs
+            self.logs.append(f"[{i+1}] ID: {random_id} | Cache Hit: {hit_status} | Question: {question_text[:100] if question_text else 'N/A'}")
+
+        # Resumen final
+        total = self.hits + self.misses
+        hit_rate = (self.hits / total) * 100 if total > 0 else 0
+        miss_rate = (self.misses / total) * 100 if total > 0 else 0
+        self.logs.append("\n=== Simulación completa ===")
+        self.logs.append(f"Hits: {self.hits}, Misses: {self.misses}")
+        self.logs.append(f"Hit Rate: {hit_rate:.2f}%, Miss Rate: {miss_rate:.2f}%")
+
+        # Guardar en archivo
+        output_file = "/data/traffic_analysis.txt"
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(self.logs))
 
 if __name__ == "__main__":
-    # 🔹 Saludar a Grok primero
-    grok_saludo()
-
-    # 🔹 Ejecutar tráfico
-    generator = TrafficGenerator()
-    generator.simulate_traffic()
+    generator = TrafficGeneratorDB()
+    generator.simulate_traffic(num_queries=1000)
