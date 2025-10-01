@@ -7,7 +7,7 @@ from datetime import datetime
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
-
+import shutil  # <-- para mover archivos
 # --- Configuración API Keys ---
 API_KEYS = [k.strip() for k in os.getenv("OPENROUTER_API_KEY", "").split(",") if k.strip()]
 if not API_KEYS:
@@ -25,7 +25,7 @@ DB_CONFIG = {
     "password": os.getenv("DB_PASSWORD", "password123")
 }
 
-MAX_QUESTIONS = 15000  # Límite total de preguntas a procesar
+MAX_QUESTIONS = 15002  # Límite total de preguntas a procesar
 
 # --- Función para llamar a Grok ---
 def call_grok(question, image=None, wait_on_fail=10):
@@ -142,7 +142,7 @@ def main():
     total = len(questions_to_process)
     print(f"📌 Total de preguntas nuevas a procesar en esta sesión: {total}")
 
-    save_every = 20
+    save_every = 1
     processed = 0
 
     with ThreadPoolExecutor(max_workers=10) as executor:

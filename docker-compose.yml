@@ -107,13 +107,19 @@ services:
   scorer:
     build: ./Scorer
     container_name: yahoo_scorer
-    profiles: ["manual"]
     environment:
       - DB_HOST=database
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - DB_NAME=${DB_NAME}
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
       - DB_PORT=5432
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    volumes:
+      - ./Scorer:/app  # Monta tu carpeta local directamente en /app
+      - ./local_data:/data
     depends_on:
       database:
         condition: service_healthy

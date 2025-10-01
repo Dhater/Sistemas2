@@ -1,16 +1,30 @@
-FROM python:3.9-slim
+# Usar Python 3.11 slim
+FROM python:3.11-slim
 
+# Directorio de trabajo
 WORKDIR /app
 
-# Instalar dependencias del sistema para transformers
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
+# Evitar problemas de locales UTF-8
+ENV LANG=C.UTF-8
+
+# Copiar requirements
+COPY requirements.txt .
+
+# Instalar dependencias del sistema necesarias y luego Python
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libpq-dev curl \
+    && pip install --no-cache-dir -r requirements.txt \
+    && apt-get purge -y --auto-remove gcc \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
+# Copiar tu script
 COPY app.py .
 
+# Crear carpeta de datos
+RUN mkdir -p /data
+
+# Montar volumen para desarrollo (esto se hace en docker-compose)
+VOLUME ["/app", "/data"]
+
+# Comando por defecto
 CMD ["python", "app.py"]
