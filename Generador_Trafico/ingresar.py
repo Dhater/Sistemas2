@@ -1,4 +1,3 @@
-# upsert_jsonl_pg.py
 import os
 import json
 import psycopg2
@@ -6,7 +5,6 @@ from psycopg2.extras import execute_values
 from dotenv import load_dotenv
 import shutil
 import platform
-from datetime import datetime
 
 # --- Cargar .env ---
 load_dotenv()
@@ -17,7 +15,6 @@ DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 
-# Sobrescribir DB_HOST para Windows si queremos probar fuera de Docker
 if platform.system() == "Windows" and DB_HOST == "database":
     DB_HOST = "localhost"
 
@@ -25,10 +22,26 @@ if platform.system() == "Windows" and DB_HOST == "database":
 BASE_DIR = os.path.dirname(__file__)
 JSON_ORIGINAL = os.path.join(BASE_DIR, "../data/grok_answers.json")
 JSON_EVALUATED = os.path.join(BASE_DIR, "../data/grok_answers_evaluated.jsonl")
-LOCAL_BACKUP = os.path.join(BASE_DIR, f"grok_answers_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
-DATABASE_DUMP = os.path.join(BASE_DIR, "database_copy.json")
 
-# --- Crear copia local del JSON evaluated ---
+# Contar cantidad de datos en el JSON evaluado
+if os.path.exists(JSON_EVALUATED):
+    with open(JSON_EVALUATED, "r", encoding="utf-8") as f:
+        if JSON_EVALUATED.endswith(".jsonl"):
+            total_lines = sum(1 for _ in f)
+        else:
+            data = json.load(f)
+            total_lines = len(data)
+else:
+    total_lines = 0
+
+# --- Eliminar backups anteriores ---
+for file in os.listdir(BASE_DIR):
+    if file.startswith("grok_answers_backup_") and file.endswith(".jsonl"):
+        os.remove(os.path.join(BASE_DIR, file))
+        print(f"🗑 Eliminado backup anterior: {file}")
+
+# Crear backup usando la cantidad de datos
+LOCAL_BACKUP = os.path.join(BASE_DIR, f"grok_answers_backup_{total_lines}_entries.jsonl")
 if os.path.exists(JSON_EVALUATED):
     shutil.copy2(JSON_EVALUATED, LOCAL_BACKUP)
     print(f"📄 Copia local creada en: {LOCAL_BACKUP}")
@@ -51,7 +64,6 @@ except Exception as e:
     exit(1)
 
 def upsert_questions(data):
-    """Upsert de lista de dicts tipo {"key": ..., "entry": {...}}"""
     records = []
     for item in data:
         entry = item["entry"]
@@ -90,39 +102,44 @@ def upsert_questions(data):
         execute_values(cur, query, records)
     print(f"✅ Insert/Update de {len(records)} preguntas completado.")
 
-def dump_database_to_json():
-    """Crea un JSON local con todos los registros actuales de la base de datos"""
+def generate_column_counts_json():
+    """Genera un JSON con la cantidad de registros no nulos por columna"""
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT id, question_text, human_answer, llm_answer,
-                   similarity_score, quality_score, completeness_score,
-                   overall_score, created_at, evaluated_at
+            SELECT 
+                COUNT(*) as total,
+                COUNT(question_text) as question_text,
+                COUNT(human_answer) as human_answer,
+                COUNT(llm_answer) as llm_answer,
+                COUNT(similarity_score) as similarity_score,
+                COUNT(quality_score) as quality_score,
+                COUNT(completeness_score) as completeness_score,
+                COUNT(overall_score) as overall_score,
+                COUNT(created_at) as created_at,
+                COUNT(evaluated_at) as evaluated_at
             FROM questions
-            ORDER BY id
         """)
-        rows = cur.fetchall()
-        result = []
-        for r in rows:
-            result.append({
-                "id": r[0],
-                "question_text": r[1],
-                "human_answer": r[2],
-                "llm_answer": r[3],
-                "similarity_score": r[4],
-                "quality_score": r[5],
-                "completeness_score": r[6],
-                "overall_score": r[7],
-                "created_at": r[8].isoformat() if r[8] else None,
-                "evaluated_at": r[9].isoformat() if r[9] else None
-            })
-    with open(DATABASE_DUMP, "w", encoding="utf-8") as f:
+        counts = cur.fetchone()
+
+    result = {
+        "total": counts[0],
+        "question_text": counts[1],
+        "human_answer": counts[2],
+        "llm_answer": counts[3],
+        "similarity_score": counts[4],
+        "quality_score": counts[5],
+        "completeness_score": counts[6],
+        "overall_score": counts[7],
+        "created_at": counts[8],
+        "evaluated_at": counts[9]
+    }
+
+    json_path = os.path.join(BASE_DIR, "column_counts.json")
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
-    print(f"📄 Dump de la base de datos guardado en: {DATABASE_DUMP}")
+    print(f"📄 Cantidad de registros por columna guardada en: {json_path}")
 
 def upsert_json_file(file_path):
-    """Sube el contenido de un JSON o JSONL a la base de datos
-    Devuelve la cantidad total de registros insertados/upserted
-    """
     batch = []
     batch_size = 1000
     total_count = 0
@@ -132,7 +149,6 @@ def upsert_json_file(file_path):
         return 0
 
     if file_path.endswith(".jsonl"):
-        # JSONL: cada línea es un objeto tipo {"key":..., "entry": {...}}
         with open(file_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -145,7 +161,6 @@ def upsert_json_file(file_path):
                     upsert_questions(batch)
                     batch.clear()
     else:
-        # JSON completo tipo {"3": {...}, "7": {...}, ...}
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
             for key, entry in data.items():
@@ -160,19 +175,15 @@ def upsert_json_file(file_path):
 
     return total_count
 
-
-
 def main():
-    # 1️⃣ Primero subir grok_answers.json
     count_original = upsert_json_file(JSON_ORIGINAL)
     print(f"📥 Se introdujeron {count_original} preguntas desde {os.path.basename(JSON_ORIGINAL)}")
 
-    # 2️⃣ Luego subir grok_answers_evaluated.jsonl
     count_evaluated = upsert_json_file(JSON_EVALUATED)
     print(f"📥 Se introdujeron {count_evaluated} preguntas desde {os.path.basename(JSON_EVALUATED)}")
 
-    # 3️⃣ Dump completo de la base
-    dump_database_to_json()
+    # Generar JSON con cantidad de datos por columna
+    generate_column_counts_json()
 
 
 if __name__ == "__main__":
