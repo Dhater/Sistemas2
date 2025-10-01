@@ -18,7 +18,7 @@ api_keys_cycle = cycle(API_KEYS)
 DATA_PATH = "/data/grok_answers.json"            # input: JSON normal con todas las preguntas
 OUTPUT_PATH = "/data/grok_answers_evaluated.jsonl"  # salida: JSONL (una entrada por línea)
 TEMP_OUTPUT = OUTPUT_PATH + ".tmp"
-
+MAX_ENTRIES = 10001  # <-- límite de JSONL
 lock = Lock()
 session = requests.Session()
 session.headers.update({"Content-Type": "application/json"})
@@ -148,12 +148,12 @@ def main():
         print(f"No se encontró el JSON en {DATA_PATH}")
         return
 
-    # carga el input completo (solo para iterar)
     with open(DATA_PATH, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    # lee OUTPUT_PATH si existe (JSONL) para construir processed_keys
+    # construir processed_keys
     processed_keys = set()
+    current_count = 0
     if os.path.exists(OUTPUT_PATH):
         try:
             with open(OUTPUT_PATH, "r", encoding="utf-8") as f:
@@ -164,13 +164,14 @@ def main():
                     k = obj.get("key")
                     if k:
                         processed_keys.add(k)
+                        current_count += 1
             print(f"🔄 Reanudando desde {len(processed_keys)} preguntas ya evaluadas (JSONL).")
         except Exception as e:
-            print("⚠️ Error leyendo OUTPUT_PATH existente. Puede que el archivo esté corrupto. Ignorando y continuando.", e)
+            print("⚠️ Error leyendo OUTPUT_PATH existente. Ignorando y continuando.", e)
 
     max_workers = 5
     buffer = []
-    save_every = 40  # <--- guardar cada 40
+    save_every = 40
 
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -178,6 +179,9 @@ def main():
             for k, v in data.items():
                 if k in processed_keys:
                     continue
+                if current_count >= MAX_ENTRIES:
+                    print(f"⚠️ Se alcanzó el límite de {MAX_ENTRIES} entradas. Deteniendo proceso.")
+                    break
                 futures[executor.submit(process_question, k, v, processed_keys)] = k
 
             with open(OUTPUT_PATH, "a", encoding="utf-8") as out_f:
@@ -189,7 +193,9 @@ def main():
                     line_obj = {"key": key, "entry": entry}
                     buffer.append(line_obj)
                     processed_keys.add(key)
-                    print(f"✅ Pregunta {key} evaluada y añadida al buffer.")
+                    current_count += 1
+
+                    print(f"✅ Pregunta {key} evaluada y añadida al buffer. Total={current_count}")
 
                     # Guardar cada 40 entradas
                     if len(buffer) >= save_every:
@@ -198,6 +204,10 @@ def main():
                         out_f.flush()
                         buffer.clear()
                         print(f"💾 Guardadas 40 entradas al JSONL.")
+
+                    if current_count >= MAX_ENTRIES:
+                        print(f"⚠️ Se alcanzó el límite de {MAX_ENTRIES} entradas. Terminando ejecución.")
+                        break
 
         # Volcar cualquier entrada restante
         if buffer:
