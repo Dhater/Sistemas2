@@ -1,11 +1,14 @@
+import os
 import pandas as pd
 import numpy as np
 import time
-import asyncio
 import redis
 import psycopg2
 from datetime import datetime
-import os
+
+# 🔹 Ejecutar ingresar.py antes de nada
+import ingresar
+ingresar.main()  # ejecutar la función main() de ingresar.py
 
 class TrafficGenerator:
     def __init__(self):
@@ -23,15 +26,12 @@ class TrafficGenerator:
         )
         
     def poisson_distribution(self, lambda_param=1.0):
-        """Distribución de Poisson para tiempos entre llegadas"""
         return np.random.poisson(lambda_param)
     
     def uniform_distribution(self, min_time=0.1, max_time=2.0):
-        """Distribución uniforme para tiempos entre llegadas"""
         return np.random.uniform(min_time, max_time)
     
     def get_random_question(self):
-        """Obtiene una pregunta aleatoria del dataset"""
         return self.df.sample(n=1).iloc[0]
     
     def simulate_traffic(self):
@@ -39,20 +39,13 @@ class TrafficGenerator:
         num_queries = int(os.getenv('NUM_QUERIES', 10000))
         
         for i in range(num_queries):
-            # Seleccionar distribución de tiempo
-            if distribution == 'poisson':
-                wait_time = self.poisson_distribution()
-            else:
-                wait_time = self.uniform_distribution()
-            
+            wait_time = self.poisson_distribution() if distribution == 'poisson' else self.uniform_distribution()
             time.sleep(wait_time)
             
-            # Obtener pregunta aleatoria
             question_data = self.get_random_question()
             question = question_data['Question']
             human_answer = question_data['Answer']
             
-            # Aquí integrarías con los otros módulos (Cache, LLM, Scorer)
             print(f"Query {i}: {question[:100]}...")
             
         print("Simulación de tráfico completada")
