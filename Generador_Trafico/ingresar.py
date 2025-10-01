@@ -1,10 +1,8 @@
 import os
 import json
 import psycopg2
-from psycopg2.extras import execute_values
+from psycopg2.extras import execute_values, RealDictCursor
 from dotenv import load_dotenv
-import shutil
-import platform
 
 # --- Cargar .env ---
 load_dotenv()
@@ -15,38 +13,10 @@ DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 
-if platform.system() == "Windows" and DB_HOST == "database":
-    DB_HOST = "localhost"
-
 # --- Rutas ---
 BASE_DIR = os.path.dirname(__file__)
 JSON_ORIGINAL = os.path.join(BASE_DIR, "../data/grok_answers.json")
 JSON_EVALUATED = os.path.join(BASE_DIR, "../data/grok_answers_evaluated.jsonl")
-
-# Contar cantidad de datos en el JSON evaluado
-if os.path.exists(JSON_EVALUATED):
-    with open(JSON_EVALUATED, "r", encoding="utf-8") as f:
-        if JSON_EVALUATED.endswith(".jsonl"):
-            total_lines = sum(1 for _ in f)
-        else:
-            data = json.load(f)
-            total_lines = len(data)
-else:
-    total_lines = 0
-
-# --- Eliminar backups anteriores ---
-for file in os.listdir(BASE_DIR):
-    if file.startswith("grok_answers_backup_") and file.endswith(".jsonl"):
-        os.remove(os.path.join(BASE_DIR, file))
-        print(f"🗑 Eliminado backup anterior: {file}")
-
-# Crear backup usando la cantidad de datos
-LOCAL_BACKUP = os.path.join(BASE_DIR, f"grok_answers_backup_{total_lines}_entries.jsonl")
-if os.path.exists(JSON_EVALUATED):
-    shutil.copy2(JSON_EVALUATED, LOCAL_BACKUP)
-    print(f"📄 Copia local creada en: {LOCAL_BACKUP}")
-else:
-    print(f"⚠️ No se encontró {JSON_EVALUATED}, se continuará sin backup de evaluated.")
 
 # --- Conexión a PostgreSQL ---
 try:
@@ -104,7 +74,7 @@ def upsert_questions(data):
 
 def generate_column_counts_json():
     """Genera un JSON con la cantidad de registros no nulos por columna"""
-    with conn.cursor() as cur:
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("""
             SELECT 
                 COUNT(*) as total,
@@ -121,22 +91,9 @@ def generate_column_counts_json():
         """)
         counts = cur.fetchone()
 
-    result = {
-        "total": counts[0],
-        "question_text": counts[1],
-        "human_answer": counts[2],
-        "llm_answer": counts[3],
-        "similarity_score": counts[4],
-        "quality_score": counts[5],
-        "completeness_score": counts[6],
-        "overall_score": counts[7],
-        "created_at": counts[8],
-        "evaluated_at": counts[9]
-    }
-
     json_path = os.path.join(BASE_DIR, "column_counts.json")
     with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
+        json.dump(counts, f, ensure_ascii=False, indent=2)
     print(f"📄 Cantidad de registros por columna guardada en: {json_path}")
 
 def upsert_json_file(file_path):
@@ -182,9 +139,7 @@ def main():
     count_evaluated = upsert_json_file(JSON_EVALUATED)
     print(f"📥 Se introdujeron {count_evaluated} preguntas desde {os.path.basename(JSON_EVALUATED)}")
 
-    # Generar JSON con cantidad de datos por columna
     generate_column_counts_json()
-
 
 if __name__ == "__main__":
     main()
