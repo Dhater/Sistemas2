@@ -2,112 +2,114 @@ import os
 import time
 import numpy as np
 import redis
-import psycopg2
-from itertools import cycle
+import json
 import requests
-
-# 🔹 Ejecutar ingresar.py antes de nada
 import ingresar
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
 ingresar.main()
+API_PORT = 8000
+API_URL = f"http://llm_client_pruebas:{API_PORT}/evaluate"
+REDIS_HOST = os.getenv('REDIS_HOST', 'cache')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 
-# 🔹 Configurar Grok
-GROK_KEYS = os.getenv("OPENROUTER_API_KEY", "").split(",")
-api_keys_cycle = cycle(GROK_KEYS)
-session = requests.Session()
-
-def call_grok(prompt, max_retries=3, base_wait=2):
-    tried = 0
-    last_exc = None
-    while tried < max_retries:
-        key = next(api_keys_cycle)
-        payload = {
-            "model": "x-ai/grok-4-fast:free",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
-        }
-        try:
-            resp = session.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={"Authorization": f"Bearer {key}"},
-                json=payload,
-                timeout=60
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-            if isinstance(content, list):
-                return " ".join([c.get("text", "") for c in content])
-            return content
-        except Exception as e:
-            last_exc = e
-            tried += 1
-            time.sleep(base_wait * tried)
-    raise RuntimeError(f"Todas las reintentos fallaron: {last_exc}")
-
-class TrafficGeneratorDB:
-    def __init__(self):
-        self.redis_client = redis.Redis(
-            host=os.getenv('REDIS_HOST', 'cache'),
-            port=int(os.getenv('REDIS_PORT', 6379)),
-            decode_responses=True
-        )
-        # Limpiar cache al inicio
+class TrafficGenerator:
+    def __init__(self, start_id, end_id, distribution="uniform"):
+        self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
         self.redis_client.flushdb()
-        self.conn = psycopg2.connect(
-            host=os.getenv('DB_HOST', 'database'),
-            database=os.getenv('DB_NAME', 'yahoo_qa'),
-            user=os.getenv('DB_USER', 'postgres'),
-            password=os.getenv('DB_PASSWORD', 'password123')
-        )
-        self.conn.autocommit = True
+        self.start_id = start_id
+        self.end_id = end_id
+        self.distribution = distribution.lower()
         self.hits = 0
         self.misses = 0
-        self.logs = []  # Aquí guardamos todo
+        self.logs = []
+        self.responses = []
 
-    def simulate_traffic(self, num_queries=100, key_range=(1, 5000)):
+        self.session = requests.Session()
+        self.conn = psycopg2.connect(
+            host=os.getenv("DB_HOST", "database"),
+            dbname=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            cursor_factory=RealDictCursor
+        )
+
+    def get_from_db(self, qid):
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT * FROM questions WHERE id = %s", (qid,))
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+        return None
+
+    def get_from_api(self, qid):
+        try:
+            resp = self.session.post(API_URL, json={"id": qid}, timeout=60)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            print(f"❌ Error llamando API para id={qid}: {e}")
+            return None
+
+    def sample_qid(self):
+        if self.distribution == "uniform":
+            return int(np.random.randint(self.start_id, self.end_id + 1))
+        elif self.distribution == "normal":
+            mean = (self.start_id + self.end_id) / 2
+            std = (self.end_id - self.start_id) / 6
+            qid = int(np.random.normal(mean, std))
+            return int(np.clip(qid, self.start_id, self.end_id))
+        elif self.distribution == "poisson":
+            lam = (self.start_id + self.end_id) / 2
+            qid = int(np.random.poisson(lam))
+            return int(np.clip(qid, self.start_id, self.end_id))
+        elif self.distribution == "random":
+            return int(np.random.random() * (self.end_id - self.start_id + 1)) + self.start_id
+
+
+    def simulate_traffic(self, num_queries=1000):
         for i in range(num_queries):
-            random_id = np.random.randint(key_range[0], key_range[1]+1)
-            cache_key = f"question:{random_id}"
-
+            qid = self.sample_qid()
+            cache_key = f"question:{qid}"
             cached = self.redis_client.get(cache_key)
+
             if cached:
                 self.hits += 1
-                question_text = cached
+                data = json.loads(cached)
                 hit_status = True
             else:
                 self.misses += 1
-                with self.conn.cursor() as cur:
-                    cur.execute("SELECT question_text, llm_answer FROM questions WHERE id = %s", (random_id,))
-                    row = cur.fetchone()
-                    if row:
-                        question_text, llm_answer = row
-                        if not llm_answer:
-                            llm_answer = call_grok(question_text)
-                            cur.execute(
-                                "UPDATE questions SET llm_answer = %s, evaluated_at = NOW() WHERE id = %s", 
-                                (llm_answer, random_id)
-                            )
-                        self.redis_client.set(cache_key, llm_answer)
-                        question_text = llm_answer
-                    else:
-                        question_text = None
+                data = self.get_from_db(qid)
+                if data:
+                    self.redis_client.set(cache_key, json.dumps(data, default=str))
+                else:
+                    data = self.get_from_api(qid)
+                    if data:
+                        self.redis_client.set(cache_key, json.dumps(data))
                 hit_status = False
 
-            # Guardar en logs
-            self.logs.append(f"[{i+1}] ID: {random_id} | Cache Hit: {hit_status} | Question: {question_text[:100] if question_text else 'N/A'}")
+            self.logs.append(f"[{i+1}] ID={qid} | Cache Hit={hit_status}")
+            if data:
+                self.responses.append(data)
 
-        # Resumen final
+            if (i+1) % 50 == 0:
+                print(f"⏱ {i+1}/{num_queries} queries completadas | Hits={self.hits}, Misses={self.misses}")
+
         total = self.hits + self.misses
         hit_rate = (self.hits / total) * 100 if total > 0 else 0
         miss_rate = (self.misses / total) * 100 if total > 0 else 0
-        self.logs.append("\n=== Simulación completa ===")
-        self.logs.append(f"Hits: {self.hits}, Misses: {self.misses}")
-        self.logs.append(f"Hit Rate: {hit_rate:.2f}%, Miss Rate: {miss_rate:.2f}%")
+        self.logs.append(f"\n=== Simulación completa ===\nHits={self.hits}, Misses={self.misses}, HitRate={hit_rate:.2f}%, MissRate={miss_rate:.2f}%")
 
-        # Guardar en archivo
-        output_file = "/data/traffic_analysis.txt"
-        with open(output_file, "w", encoding="utf-8") as f:
+        os.makedirs("/data", exist_ok=True)
+        with open("/data/traffic_logs.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(self.logs))
+        with open("/data/traffic_responses.json", "w", encoding="utf-8") as f:
+            json.dump(self.responses, f, ensure_ascii=False, indent=2, default=str)
+
+        print(f"✅ Simulación completada. Logs y respuestas guardadas en /data")
+
 
 if __name__ == "__main__":
-    generator = TrafficGeneratorDB()
-    generator.simulate_traffic(num_queries=1000)
+    generator = TrafficGenerator(start_id=1, end_id=10000, distribution="poisson")  # cambia a "normal", "uniform" o "random"
+    generator.simulate_traffic(num_queries=10000)
