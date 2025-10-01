@@ -101,9 +101,7 @@ services:
   generador-trafico:
     build: ./Generador_Trafico
     container_name: yahoo_generador_trafico
-    profiles: ["manual"]
     volumes:
-      - dataset_volume:/data
       - ./local_data:/data
       - ./Generador_Trafico:/app  # 🔹 Monta el código dentro de /app
     environment:
@@ -121,12 +119,6 @@ services:
       database:
         condition: service_healthy
       cache:
-        condition: service_healthy
-      cache-manager:
-        condition: service_healthy
-      llm-client:
-        condition: service_healthy
-      scorer:
         condition: service_healthy
 
 
@@ -172,8 +164,6 @@ services:
     volumes:
       - ./LLM_Client:/app      # Monta la carpeta de pruebas dentro del contenedor
       - ./local_data:/data # Para CSV y JSON de backup
-    ports:
-     - "8000:8000"  # Exponer para otros servicios
     env_file:
       - .env
     environment:
