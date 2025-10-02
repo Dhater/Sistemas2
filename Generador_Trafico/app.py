@@ -96,9 +96,7 @@ class TrafficGenerator:
             if data:
                 self.responses.append(data)
 
-            if (i+1) % 50 == 0:
-                print(f"⏱ {i+1}/{num_queries} queries completadas | Hits={self.hits}, Misses={self.misses}")
-
+        print(f"✅ Simulación completa | Total Queries={num_queries}, Hits={self.hits}, Misses={self.misses}")     
         total = self.hits + self.misses
         hit_rate = (self.hits / total) * 100 if total > 0 else 0
         miss_rate = (self.misses / total) * 100 if total > 0 else 0
