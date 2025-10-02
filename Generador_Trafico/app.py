@@ -126,3 +126,7 @@ if __name__ == "__main__":
         generator = TrafficGenerator(start_id=1, end_id=10000, distribution=distri)
         generator.simulate_traffic(num_queries=10000)
         graficador.main(distri)
+    # Limpiar la caché al final
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
+    redis_client.flushall()
+    print("🧹 Caché limpiada después de la simulación")
