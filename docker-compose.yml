@@ -50,6 +50,13 @@ services:
     container_name: yahoo_cache
     ports:
       - "6379:6379"
+    environment:
+      - REDIS_MAXMEMORY=512kb
+      - REDIS_POLICY=allkeys-lru
+    command: >
+      redis-server
+      --maxmemory ${REDIS_MAXMEMORY}
+      --maxmemory-policy ${REDIS_POLICY}
     networks:
       - yahoo_network
     healthcheck:
@@ -58,6 +65,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
 
   # Módulos manuales (no arrancan automáticamente)
   cache-manager:
