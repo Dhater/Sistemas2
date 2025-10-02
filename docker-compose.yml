@@ -48,12 +48,9 @@ services:
   cache:
     image: redis:7-alpine
     container_name: yahoo_cache
+    command: redis-server --maxmemory 52428800 --maxmemory-policy allkeys-lru
     ports:
       - "6379:6379"
-    environment:
-      - REDIS_MAXMEMORY=15mb
-      - REDIS_POLICY=allkeys-lru
-
     networks:
       - yahoo_network
     healthcheck:
@@ -62,6 +59,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
 
 
 
