@@ -52,6 +52,10 @@ class TrafficGenerator:
             print(f"❌ Error llamando API para id={qid}: {e}")
             return None
 
+    def cache_size(self):
+        """Devuelve la cantidad de keys en Redis que corresponden a preguntas"""
+        return len(self.redis_client.keys("question:*"))
+
     def sample_qid(self):
         if self.distribution == "uniform":
             return int(np.random.randint(self.start_id, self.end_id + 1))
@@ -66,7 +70,6 @@ class TrafficGenerator:
             return int(np.clip(qid, self.start_id, self.end_id))
         elif self.distribution == "random":
             return int(np.random.random() * (self.end_id - self.start_id + 1)) + self.start_id
-
 
     def simulate_traffic(self, num_queries=1000):
         for i in range(num_queries):
@@ -99,17 +102,27 @@ class TrafficGenerator:
         total = self.hits + self.misses
         hit_rate = (self.hits / total) * 100 if total > 0 else 0
         miss_rate = (self.misses / total) * 100 if total > 0 else 0
-        self.logs.append(f"\n=== Simulación completa ===\nHits={self.hits}, Misses={self.misses}, HitRate={hit_rate:.2f}%, MissRate={miss_rate:.2f}%")
+        self.logs.append(
+            f"\n=== Simulación completa ({self.distribution}) ===\nHits={self.hits}, Misses={self.misses}, "
+            f"HitRate={hit_rate:.2f}%, MissRate={miss_rate:.2f}%, Total IDs en cache={self.cache_size()}"
+        )
 
-        os.makedirs("/data", exist_ok=True)
-        with open("/data/traffic_logs.txt", "w", encoding="utf-8") as f:
+        # Guardar logs y respuestas
+        os.makedirs("/data/graficos", exist_ok=True)
+        log_file = os.path.join("/data", f"traffic_logs_{self.distribution}.txt")
+        resp_file = os.path.join("/data", f"traffic_responses_{self.distribution}.json")
+        with open(log_file, "w", encoding="utf-8") as f:
             f.write("\n".join(self.logs))
-        with open("/data/traffic_responses.json", "w", encoding="utf-8") as f:
+        with open(resp_file, "w", encoding="utf-8") as f:
             json.dump(self.responses, f, ensure_ascii=False, indent=2, default=str)
 
-        print(f"✅ Simulación completada. Logs y respuestas guardadas en /data")
+        print(f"✅ Simulación completa para {self.distribution}. Logs guardados en {log_file}")
 
 
 if __name__ == "__main__":
-    generator = TrafficGenerator(start_id=1, end_id=10000, distribution="poisson")  # cambia a "normal", "uniform" o "random"
-    generator.simulate_traffic(num_queries=10000)
+    import graficador  # tu script de graficar
+
+    for distri in ["uniform", "normal", "poisson", "random"]:
+        generator = TrafficGenerator(start_id=1, end_id=10000, distribution=distri)
+        generator.simulate_traffic(num_queries=10000)
+        graficador.main(distri)

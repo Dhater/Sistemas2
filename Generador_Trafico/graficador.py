@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 BASE_DIR = os.path.dirname(__file__)
 TRAFFIC_LOGS = os.path.join(BASE_DIR, "../data/traffic_logs.txt")
-GRAFICOS_DIR = os.path.join(BASE_DIR, "../graficos")
+GRAFICOS_DIR = os.path.join(BASE_DIR, "../data/graficos")
 
 os.makedirs(GRAFICOS_DIR, exist_ok=True)
 

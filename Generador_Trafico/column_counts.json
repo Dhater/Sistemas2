@@ -1,0 +1,12 @@
+{
+  "total": 30000,
+  "question_text": 30000,
+  "human_answer": 30000,
+  "llm_answer": 15042,
+  "similarity_score": 10199,
+  "quality_score": 10199,
+  "completeness_score": 10199,
+  "overall_score": 10199,
+  "created_at": 30000,
+  "evaluated_at": 10199
+}
