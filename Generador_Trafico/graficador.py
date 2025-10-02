@@ -3,17 +3,21 @@ from collections import Counter
 import matplotlib.pyplot as plt
 
 BASE_DIR = os.path.dirname(__file__)
-TRAFFIC_LOGS = os.path.join(BASE_DIR, "../data/traffic_logs.txt")
 GRAFICOS_DIR = os.path.join(BASE_DIR, "../data/graficos")
-
 os.makedirs(GRAFICOS_DIR, exist_ok=True)
 
 def main(distribution_name="uniform"):
+    # Archivo de logs en la misma carpeta que los gráficos
+    traffic_logs_file = os.path.join(GRAFICOS_DIR, f"traffic_logs_{distribution_name}.txt")
+    if not os.path.exists(traffic_logs_file):
+        print(f"❌ No se encontró {traffic_logs_file}")
+        return
+
     # Leer archivo
-    with open(TRAFFIC_LOGS, "r", encoding="utf-8") as f:
+    with open(traffic_logs_file, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
-    # Extraer IDs de cada línea
+    # Extraer IDs
     ids = []
     for line in lines:
         if line.startswith("["):
@@ -24,7 +28,7 @@ def main(distribution_name="uniform"):
             except Exception:
                 continue
 
-    # Contar ocurrencias de cada ID
+    # Contar ocurrencias
     counter = Counter(ids)
     id_list = list(counter.keys())
     count_list = list(counter.values())

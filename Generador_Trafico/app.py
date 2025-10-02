@@ -109,8 +109,8 @@ class TrafficGenerator:
 
         # Guardar logs y respuestas
         os.makedirs("/data/graficos", exist_ok=True)
-        log_file = os.path.join("/data", f"traffic_logs_{self.distribution}.txt")
-        resp_file = os.path.join("/data", f"traffic_responses_{self.distribution}.json")
+        log_file = os.path.join("/data/graficos", f"traffic_logs_{self.distribution}.txt")
+        resp_file = os.path.join("/data/graficos", f"traffic_responses_{self.distribution}.json")
         with open(log_file, "w", encoding="utf-8") as f:
             f.write("\n".join(self.logs))
         with open(resp_file, "w", encoding="utf-8") as f:
