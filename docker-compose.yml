@@ -1,6 +1,8 @@
+version: "3.9"
+
 services:
 
-  # Base de datos PostgreSQL (arranca por defecto)
+  # Base de datos PostgreSQL
   database:
     build: ./Database
     container_name: yahoo_database
@@ -24,7 +26,6 @@ services:
       retries: 5
       start_period: 30s
 
-  # Servicio opcional: descarga de dataset
   descarga-dataset:
     build: ./Descarga_Dataset
     container_name: yahoo_descarga_dataset
@@ -41,7 +42,6 @@ services:
       database:
         condition: service_healthy
 
-  # Servicio de caché Redis opcional
   cache:
     image: redis:7-alpine
     container_name: yahoo_cache
@@ -56,7 +56,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-
 
   cache-manager:
     build: ./Cache
@@ -88,17 +87,8 @@ services:
     volumes:
       - ./local_data:/data
       - ./Generador_Trafico:/app
-    environment:
-      - DB_HOST=database
-      - DB_NAME=${DB_NAME}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - REDIS_HOST=cache
-      - REDIS_PORT=6379
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - TRAFFIC_DISTRIBUTION=${TRAFFIC_DISTRIBUTION}
-      - NUM_QUERIES=${NUM_QUERIES}
-      - CACHE_POLICY=${CACHE_POLICY}
+    env_file:
+      - .env
     depends_on:
       database:
         condition: service_healthy
@@ -118,20 +108,6 @@ services:
       - "8000:8000"
     env_file:
       - .env
-    environment:
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - MODEL=${MODEL}
-      - CSV_PATH=/data/yahoo_answers.csv
-      - LOCAL_JSON_PATH=/data/responses.json
-      - DB_HOST=${DB_HOST}
-      - DB_PORT=${DB_PORT}
-      - DB_NAME=${DB_NAME}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - REDIS_HOST=${REDIS_HOST}
-      - REDIS_PORT=${REDIS_PORT}
-      - MAX_WORKERS=${MAX_WORKERS}
-      - BATCH_SIZE=${BATCH_SIZE}
     depends_on:
       database:
         condition: service_healthy
@@ -140,34 +116,35 @@ services:
     restart: "no"
     networks:
       - yahoo_network
-  # 🦜 Kafka broker principal
-  kafka:
-    image: bitnami/kafka:3.7
-    container_name: yahoo_kafka
-    environment:
-      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
-      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
-      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
-      - ALLOW_PLAINTEXT_LISTENER=yes
-    ports:
-      - "9092:9092"
-    depends_on:
-      - zookeeper
-    networks:
-      - yahoo_network
 
-  # 🧭 Zookeeper requerido por Kafka
   zookeeper:
-    image: bitnami/zookeeper:3.8
+    image: confluentinc/cp-zookeeper:7.5.0
     container_name: yahoo_zookeeper
     environment:
-      - ALLOW_ANONYMOUS_LOGIN=yes
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
     ports:
       - "2181:2181"
     networks:
       - yahoo_network
 
-  # 🔄 Flink cluster (JobManager + TaskManager)
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: yahoo_kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    ports:
+      - "9092:9092"
+    networks:
+      - yahoo_network
+
+
   flink-jobmanager:
     image: flink:1.19-scala_2.12
     container_name: yahoo_flink_jobmanager
@@ -175,7 +152,7 @@ services:
     environment:
       - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
     ports:
-      - "8081:8081"  # interfaz web
+      - "8081:8081"
     networks:
       - yahoo_network
 
@@ -187,6 +164,14 @@ services:
       - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
     depends_on:
       - flink-jobmanager
+    networks:
+      - yahoo_network
+
+  flink-reprocessor:
+    build: ./FlinkReprocessor
+    container_name: flink_reprocessor
+    depends_on:
+      - kafka
     networks:
       - yahoo_network
 

@@ -4,10 +4,30 @@ import numpy as np
 import json
 import requests
 from datetime import datetime
+from confluent_kafka import Producer
 
+# --- Configuración de API ---
 API_PORT = 8000
 API_URL = f"http://API_CLIENT:{API_PORT}/evaluate"
 
+# --- Configuración de Kafka ---
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
+TOPIC_PREGUNTAS = os.getenv("KAFKA_TOPIC_PREGUNTAS", "preguntas")
+
+producer = Producer({'bootstrap.servers': KAFKA_BROKER})
+
+def send_to_kafka(qid):
+    """Envía el ID (qid) al tópico de Kafka."""
+    try:
+        payload = json.dumps({"id": qid})
+        producer.produce(TOPIC_PREGUNTAS, payload.encode('utf-8'))
+        producer.flush()
+        print(f"📤 Enviada pregunta {qid} a Kafka topic '{TOPIC_PREGUNTAS}'")
+    except Exception as e:
+        print(f"❌ Error enviando {qid} a Kafka: {e}")
+
+
+# --- Clase principal de generador de tráfico ---
 class TrafficGenerator:
     def __init__(self, start_id, end_id, distribution="uniform"):
         self.start_id = start_id
@@ -17,6 +37,7 @@ class TrafficGenerator:
         self.session = requests.Session()
 
     def sample_qid(self):
+        """Genera un ID de pregunta según la distribución elegida."""
         if self.distribution == "uniform":
             return int(np.random.randint(self.start_id, self.end_id + 1))
         elif self.distribution == "normal":
@@ -32,6 +53,7 @@ class TrafficGenerator:
             return int(np.random.random() * (self.end_id - self.start_id + 1)) + self.start_id
 
     def get_from_api(self, qid):
+        """Hace una llamada HTTP al API con el ID generado."""
         payload = {"id": qid}
         try:
             resp = self.session.post(API_URL, json=payload, timeout=60)
@@ -42,19 +64,27 @@ class TrafficGenerator:
             return {"request": payload, "response": None, "error": str(e)}
 
     def simulate_traffic(self, num_queries=100):
+        """Simula tráfico: envía IDs a Kafka y hace llamadas al API."""
         for i in range(num_queries):
             qid = self.sample_qid()
+
+            # 🔹 Enviar a Kafka
+            send_to_kafka(qid)
+
+            # 🔹 Llamar al API
             result = self.get_from_api(qid)
             self.responses.append(result)
-            print(f"[{i+1}] ID={qid} | Obtenida de API")
+
+            print(f"[{i+1}] ID={qid} | Enviada a Kafka y obtenida de API")
 
         print(f"✅ Simulación completa: {len(self.responses)} respuestas obtenidas")
         return self.responses
 
 
+# --- Ejecución principal ---
 if __name__ == "__main__":
     generator = TrafficGenerator(start_id=25000, end_id=30000, distribution="uniform")
-    responses = generator.simulate_traffic(num_queries=2)  # puedes cambiar el número
+    responses = generator.simulate_traffic(num_queries=5)  # puedes cambiar el número
 
     # --- Función para convertir datetimes a string ---
     def convert_datetimes(obj):
@@ -75,4 +105,4 @@ if __name__ == "__main__":
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(responses_clean, f, ensure_ascii=False, indent=2)
 
-    print(f"Respuestas guardadas en {output_file}")
+    print(f"📁 Respuestas guardadas en {output_file}")

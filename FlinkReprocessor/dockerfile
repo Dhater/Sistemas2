@@ -1,0 +1,6 @@
+FROM flink:1.19-scala_2.12
+
+COPY Reprocessor_Flink.py /app/Reprocessor_Flink.py
+WORKDIR /app
+
+CMD ["python", "Reprocessor_Flink.py"]

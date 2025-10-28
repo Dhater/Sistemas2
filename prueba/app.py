@@ -1,12 +1,14 @@
-# app.py
 import os
 import logging
+import json
+import threading
+import time
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import psycopg2
 from openai import OpenAI
-import json
+from confluent_kafka import Consumer, Producer
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO)
@@ -55,10 +57,6 @@ Pregunta:
 
 # --- Evaluación del modelo respecto a la respuesta humana ---
 def evaluate_response_with_llm(llm_answer, human_answer, api_key):
-    """
-    Cambié el orden de evaluación: ahora evaluamos la respuesta del modelo respecto
-    a la humana como referencia.
-    """
     prompt = f"""
 Evalúa la respuesta del MODELO comparada con la respuesta HUMANA.
 
@@ -104,7 +102,7 @@ def save_response_json(data: dict, filename="responses.json"):
     except Exception as e:
         logger.warning(f"No se pudo guardar respuesta en JSON: {e}")
 
-# --- Endpoint principal ---
+# --- Endpoint principal HTTP ---
 @app.post("/evaluate")
 def evaluate_question(req: QuestionRequest):
     api_keys = [k.strip() for k in os.getenv("OPENROUTER_API_KEY", "").split(",") if k.strip()]
@@ -170,3 +168,63 @@ def evaluate_question(req: QuestionRequest):
     save_response_json(response_data)
 
     return response_data
+
+
+# --- Kafka Consumer/Producer setup ---
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
+TOPIC_PREGUNTAS = "preguntas"
+TOPIC_RESPUESTAS_OK = "respuestas_exitosas"
+TOPIC_RESPUESTAS_FAIL = "respuestas_fallidas"
+
+producer = Producer({'bootstrap.servers': KAFKA_BROKER})
+
+consumer = Consumer({
+    'bootstrap.servers': KAFKA_BROKER,
+    'group.id': 'api_client_group',
+    'auto.offset.reset': 'earliest'
+})
+
+MAX_RETRIES = 3
+
+def kafka_worker():
+    consumer.subscribe([TOPIC_PREGUNTAS])
+    logger.info(f"🎧 Kafka consumer escuchando el tópico '{TOPIC_PREGUNTAS}'...")
+
+    while True:
+        msg = consumer.poll(1.0)
+        if msg is None:
+            continue
+        if msg.error():
+            logger.error(f"Error en consumo: {msg.error()}")
+            continue
+
+        try:
+            payload = json.loads(msg.value().decode('utf-8'))
+            qid = payload["id"]
+            retries = payload.get("retries", 0)
+
+            result = evaluate_question(QuestionRequest(id=qid))
+
+            if result["overall_score"] >= 0.7:
+                producer.produce(TOPIC_RESPUESTAS_OK, json.dumps(result).encode('utf-8'))
+            else:
+                if retries < MAX_RETRIES:
+                    payload["retries"] = retries + 1
+                    producer.produce(TOPIC_PREGUNTAS, json.dumps(payload).encode('utf-8'))
+                    logger.info(f"🔁 Reintentando pregunta {qid} (intento {payload['retries']})")
+                else:
+                    producer.produce(TOPIC_RESPUESTAS_FAIL, json.dumps(result).encode('utf-8'))
+                    logger.info(f"❌ Pregunta {qid} descartada tras {MAX_RETRIES} intentos")
+
+            producer.flush()
+
+        except Exception as e:
+            logger.error(f"❌ Error procesando mensaje de Kafka: {e}")
+
+
+# --- Ejecutar consumidor Kafka en segundo plano ---
+@app.on_event("startup")
+def start_kafka_background_thread():
+    thread = threading.Thread(target=kafka_worker, daemon=True)
+    thread.start()
+    logger.info("🚀 Hilo de Kafka iniciado en segundo plano")
