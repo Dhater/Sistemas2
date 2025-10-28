@@ -1,24 +1,4 @@
 services:
-  # Módulo de descarga del dataset (arranca por defecto)
-  descarga-dataset:
-    build: ./Descarga_Dataset
-    container_name: yahoo_descarga_dataset
-    volumes:
-      - dataset_volume:/data
-      - ./local_data:/data  # Carpeta local del proyecto mapeada dentro del contenedor
-    environment:
-      - KAGGLE_USERNAME=${KAGGLE_USERNAME}
-      - KAGGLE_KEY=${KAGGLE_KEY}
-      - DB_HOST=database
-      - DB_NAME=${DB_NAME}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-    restart: "no"
-    networks:
-      - yahoo_network
-    depends_on:
-      database:
-        condition: service_healthy
 
   # Base de datos PostgreSQL (arranca por defecto)
   database:
@@ -44,7 +24,24 @@ services:
       retries: 5
       start_period: 30s
 
-  # Servicio de caché Redis (arranca por defecto)
+  # Servicio opcional: descarga de dataset
+  descarga-dataset:
+    build: ./Descarga_Dataset
+    container_name: yahoo_descarga_dataset
+    profiles: ["manual"]
+    volumes:
+      - dataset_volume:/data
+      - ./local_data:/data
+    environment:
+      - KAGGLE_USERNAME=${KAGGLE_USERNAME}
+      - KAGGLE_KEY=${KAGGLE_KEY}
+    networks:
+      - yahoo_network
+    depends_on:
+      database:
+        condition: service_healthy
+
+  # Servicio de caché Redis opcional
   cache:
     image: redis:7-alpine
     container_name: yahoo_cache
@@ -53,52 +50,28 @@ services:
       - "6379:6379"
     networks:
       - yahoo_network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
 
-
-
-
-  # Módulos manuales (no arrancan automáticamente)
   cache-manager:
     build: ./Cache
     container_name: yahoo_cache_manager
+    profiles: ["manual"]
     environment:
       - REDIS_HOST=cache
-      - REDIS_PORT=6379
-      - CACHE_POLICY=${CACHE_POLICY}
-      - CACHE_SIZE=${CACHE_SIZE}
-      - CACHE_TTL=${CACHE_TTL}
     depends_on:
       cache:
         condition: service_healthy
     networks:
       - yahoo_network
 
-
-  scorer:
-    build: ./Scorer
-    container_name: yahoo_scorer
-    environment:
-      - DB_HOST=database
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - DB_NAME=${DB_NAME}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - DB_PORT=5432
-    dns:
-      - 8.8.8.8
-      - 8.8.4.4
+  pruebas:
+    build: ./LLM_Client
+    container_name: Contestador_Base
+    profiles: ["manual"]
     volumes:
-      - ./Scorer:/app  # Monta tu carpeta local directamente en /app
+      - ./LLM_Client:/app
       - ./local_data:/data
-    depends_on:
-      database:
-        condition: service_healthy
+    env_file:
+      - .env
     networks:
       - yahoo_network
 
@@ -107,7 +80,7 @@ services:
     container_name: yahoo_generador_trafico
     volumes:
       - ./local_data:/data
-      - ./Generador_Trafico:/app  # 🔹 Monta el código dentro de /app
+      - ./Generador_Trafico:/app
     environment:
       - DB_HOST=database
       - DB_NAME=${DB_NAME}
@@ -115,7 +88,7 @@ services:
       - DB_PASSWORD=${DB_PASSWORD}
       - REDIS_HOST=cache
       - REDIS_PORT=6379
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}  # múltiples keys separadas por coma
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - TRAFFIC_DISTRIBUTION=${TRAFFIC_DISTRIBUTION}
       - NUM_QUERIES=${NUM_QUERIES}
       - CACHE_POLICY=${CACHE_POLICY}
@@ -124,19 +97,18 @@ services:
         condition: service_healthy
       cache:
         condition: service_healthy
-
-
     networks:
       - yahoo_network
+
   llm-client:
     build:
-      context: ./prueba   # Carpeta donde está tu script para pruebas
+      context: ./prueba
     container_name: API_CLIENT
     volumes:
-      - ./prueba:/app      # Monta la carpeta de pruebas dentro del contenedor
-      - ./local_data:/data # Para CSV y JSON de backup
+      - ./prueba:/app
+      - ./local_data:/data
     ports:
-     - "8000:8000"  # Exponer para otros servicios
+      - "8000:8000"
     env_file:
       - .env
     environment:
@@ -160,38 +132,8 @@ services:
         condition: service_healthy
     restart: "no"
     networks:
-      - yahoo_network       # 🔹 añadir esta línea
-  pruebas:
-    build:
-      context: ./LLM_Client   # Carpeta donde está tu script para pruebas
-    container_name: Contestador_Base
-    volumes:
-      - ./LLM_Client:/app      # Monta la carpeta de pruebas dentro del contenedor
-      - ./local_data:/data # Para CSV y JSON de backup
-    env_file:
-      - .env
-    environment:
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - MODEL=${MODEL}
-      - CSV_PATH=/data/yahoo_answers.csv
-      - LOCAL_JSON_PATH=/data/responses.json
-      - DB_HOST=${DB_HOST}
-      - DB_PORT=${DB_PORT}
-      - DB_NAME=${DB_NAME}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - REDIS_HOST=${REDIS_HOST}
-      - REDIS_PORT=${REDIS_PORT}
-      - MAX_WORKERS=${MAX_WORKERS}
-      - BATCH_SIZE=${BATCH_SIZE}
-    depends_on:
-      database:
-        condition: service_healthy
-      cache:
-        condition: service_healthy
-    restart: "no"
-    networks:
-      - yahoo_network       # 🔹 añadir esta línea
+      - yahoo_network
+
 volumes:
   dataset_volume:
     driver: local
