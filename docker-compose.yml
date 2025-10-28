@@ -140,6 +140,55 @@ services:
     restart: "no"
     networks:
       - yahoo_network
+  # 🦜 Kafka broker principal
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: yahoo_kafka
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    networks:
+      - yahoo_network
+
+  # 🧭 Zookeeper requerido por Kafka
+  zookeeper:
+    image: bitnami/zookeeper:3.8
+    container_name: yahoo_zookeeper
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    ports:
+      - "2181:2181"
+    networks:
+      - yahoo_network
+
+  # 🔄 Flink cluster (JobManager + TaskManager)
+  flink-jobmanager:
+    image: flink:1.19-scala_2.12
+    container_name: yahoo_flink_jobmanager
+    command: jobmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+    ports:
+      - "8081:8081"  # interfaz web
+    networks:
+      - yahoo_network
+
+  flink-taskmanager:
+    image: flink:1.19-scala_2.12
+    container_name: yahoo_flink_taskmanager
+    command: taskmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+    depends_on:
+      - flink-jobmanager
+    networks:
+      - yahoo_network
 
 volumes:
   dataset_volume:
