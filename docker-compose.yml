@@ -50,6 +50,13 @@ services:
       - "6379:6379"
     networks:
       - yahoo_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 
   cache-manager:
     build: ./Cache

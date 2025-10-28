@@ -17,7 +17,7 @@ app = FastAPI(title="Evaluador LLM por ID")
 
 # --- Pydantic model ---
 class QuestionRequest(BaseModel):
-    id: int  # ahora recibe solo la ID
+    id: int
 
 # --- DB config ---
 DB_CONFIG = {
@@ -29,16 +29,12 @@ DB_CONFIG = {
 }
 
 # --- LLM helper ---
-def call_llm(prompt: str, api_key: str, model="openai/gpt-oss-20b:free"):
+def call_llm(prompt: str, api_key: str, model="minimax/minimax-m2:free"):
     try:
         client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
         completion = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            extra_headers={
-                "HTTP-Referer": "https://tu-sistema.local",
-                "X-Title": "Evaluador automático"
-            },
             timeout=60
         )
         return completion.choices[0].message.content.strip()
@@ -46,32 +42,51 @@ def call_llm(prompt: str, api_key: str, model="openai/gpt-oss-20b:free"):
         logger.exception("Error llamando al modelo LLM")
         raise HTTPException(status_code=500, detail=f"Error LLM: {e}")
 
-# --- Evaluación con LLM ---
-def evaluate_response_with_llm(human_answer, llm_answer, api_key):
+# --- Generar respuesta LLM concisa ---
+def generate_llm_answer(question_text, api_key):
     prompt = f"""
-Evalúa la respuesta HUMANA comparada con la respuesta del MODELO.
+Responde a la pregunta de manera **concisa y directa**.
+No escribas explicaciones largas si no son necesarias.
 
-### Respuesta humana
-{human_answer}
+Pregunta:
+{question_text}
+"""
+    return call_llm(prompt, api_key)
+
+# --- Evaluación del modelo respecto a la respuesta humana ---
+def evaluate_response_with_llm(llm_answer, human_answer, api_key):
+    """
+    Cambié el orden de evaluación: ahora evaluamos la respuesta del modelo respecto
+    a la humana como referencia.
+    """
+    prompt = f"""
+Evalúa la respuesta del MODELO comparada con la respuesta HUMANA.
 
 ### Respuesta del modelo
 {llm_answer}
+
+### Respuesta humana
+{human_answer}
 
 ### Instrucciones
 Devuelve un JSON con estos campos entre 0 y 1:
 - similarity_score
 - quality_score
 - completeness_score
+
+Solo devuelve el JSON, sin explicaciones.
 """
     result_text = call_llm(prompt, api_key)
     try:
         data = json.loads(result_text)
-        sim = float(data.get("similarity_score", 0.0))
-        qual = float(data.get("quality_score", 0.0))
-        comp = float(data.get("completeness_score", 0.0))
+        sim = float(data.get("similarity_score", 0.5))
+        qual = float(data.get("quality_score", 0.5))
+        comp = float(data.get("completeness_score", 0.5))
     except Exception:
-        sim, qual, comp = 0.0, 0.0, 0.0
-    return sim, qual, comp
+        sim, qual, comp = 0.5, 0.5, 0.5
+
+    overall = round(sim * 0.5 + qual * 0.3 + comp * 0.2, 6)
+    return sim, qual, comp, overall
 
 # --- Guardar JSON local ---
 def save_response_json(data: dict, filename="responses.json"):
@@ -113,28 +128,28 @@ def evaluate_question(req: QuestionRequest):
         if 'conn' in locals():
             conn.close()
 
-    # 2️⃣ Llamar al LLM para generar respuesta
-    llm_answer = call_llm(question_text, key_to_use)
+    # 2️⃣ Generar respuesta LLM concisa
+    llm_answer = generate_llm_answer(question_text, key_to_use)
 
-    # 3️⃣ Evaluar con LLM
-    sim, qual, comp = evaluate_response_with_llm(human_answer, llm_answer, key_to_use)
-    overall = round(sim * 0.5 + qual * 0.3 + comp * 0.2, 6)
+    # 3️⃣ Evaluar modelo respecto a humano
+    sim, qual, comp, overall = evaluate_response_with_llm(llm_answer, human_answer, key_to_use)
 
     # 4️⃣ Guardar en DB
-    eval_id = None
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO evaluations (question_text, human_answer, llm_answer,
-                                         similarity_score, quality_score,
-                                         completeness_score, overall_score, evaluated_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                RETURNING id
-            """, (question_text, human_answer, llm_answer,
-                  sim, qual, comp, overall, datetime.utcnow()))
-            eval_id = cur.fetchone()[0]
+                UPDATE questions
+                SET llm_answer=%s,
+                    similarity_score=%s,
+                    quality_score=%s,
+                    completeness_score=%s,
+                    overall_score=%s,
+                    evaluated_at=%s
+                WHERE id=%s
+            """, (llm_answer, sim, qual, comp, overall, datetime.utcnow(), req.id))
             conn.commit()
+            eval_id = req.id
     finally:
         if 'conn' in locals():
             conn.close()
