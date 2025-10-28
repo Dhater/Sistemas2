@@ -7,3 +7,4 @@ redis
 numpy==1.24.3
 scikit-learn==1.3.0
 huggingface_hub==0.15.1
+openai>=1.43.0

@@ -131,7 +131,7 @@ services:
   llm-client:
     build:
       context: ./prueba   # Carpeta donde está tu script para pruebas
-    container_name: llm_client_pruebas
+    container_name: API_CLIENT
     volumes:
       - ./prueba:/app      # Monta la carpeta de pruebas dentro del contenedor
       - ./local_data:/data # Para CSV y JSON de backup
@@ -164,7 +164,7 @@ services:
   pruebas:
     build:
       context: ./LLM_Client   # Carpeta donde está tu script para pruebas
-    container_name: Trainer
+    container_name: Contestador_Base
     volumes:
       - ./LLM_Client:/app      # Monta la carpeta de pruebas dentro del contenedor
       - ./local_data:/data # Para CSV y JSON de backup

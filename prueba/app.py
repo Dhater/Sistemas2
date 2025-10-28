@@ -1,21 +1,28 @@
+# app.py
 import os
-import json
-import requests
+import logging
+from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from datetime import datetime
 import psycopg2
-from itertools import cycle
+from openai import OpenAI
+import json
+import traceback
 import time
-import re
 
-# --- Configuración API Keys ---
-API_KEYS = [k.strip() for k in os.getenv("OPENROUTER_API_KEY", "").split(",") if k.strip()]
-if not API_KEYS:
-    raise ValueError("No se encontraron API keys en OPENROUTER_API_KEY")
-api_keys_cycle = cycle(API_KEYS)
+# --- Logging ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# --- Configuración DB ---
+# --- FastAPI ---
+app = FastAPI(title="Prueba API Keys, DB y LLM")
+
+# --- Pydantic request model ---
+class QuestionRequest(BaseModel):
+    question_text: str
+    human_answer: str = ""  # opcional
+
+# --- DB config ---
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "database"),
     "port": int(os.getenv("DB_PORT", 5432)),
@@ -24,166 +31,116 @@ DB_CONFIG = {
     "password": os.getenv("DB_PASSWORD", "password123")
 }
 
-# --- FastAPI ---
-app = FastAPI(title="Grok LLM Evaluator & Scorer")
-
-class QuestionRequest(BaseModel):
-    id: int
-
-# --- Helpers ---
-def safe_load_json_from_text(text):
-    text = text.strip()
-    if text.startswith("{") or text.startswith("["):
-        try:
-            return json.loads(text)
-        except Exception:
-            pass
-    match = re.search(r"(\{(?:[^{}]|(?R))*\})", text, flags=re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except Exception:
-            pass
-    return None
-
-def call_grok(prompt, wait_on_fail=10):
-    tried_keys = set()
-    while len(tried_keys) < len(API_KEYS):
-        key = next(api_keys_cycle)
-        if key in tried_keys:
-            continue
-        tried_keys.add(key)
-
-        payload = {
-            "model": "x-ai/grok-4-fast:free",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
-        }
-
-        try:
-            print(f"⏳ [Checkpoint] Llamando a Grok con key {key}...")
-            resp = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json=payload,
-                timeout=30
-            )
-            data = resp.json()
-            if "choices" in data and data["choices"]:
-                content = data["choices"][0]["message"]["content"]
-                if isinstance(content, list):
-                    result = " ".join([c.get("text", "") for c in content])
-                else:
-                    result = content
-                print(f"✅ [Checkpoint] Respuesta recibida de Grok (key {key})")
-                return result
-        except Exception as e:
-            print(f"❌ Error con key {key}: {e}. Rotando...")
-        time.sleep(wait_on_fail)
-    raise RuntimeError("Todas las API keys fallaron.")
-
-# --- Scorer ---
-def evaluate_response(human_answer, llm_answer):
-    print("⏳ [Checkpoint] Evaluando respuesta con scorer...")
-    prompt = f"""
-Evalúa estas respuestas:
-Humana: {human_answer}
-LLM: {llm_answer}
-
-Responde en JSON con exactamente estas claves:
-{{
-  "similarity_score": 0.0,
-  "quality_score": 0.0,
-  "completeness_score": 0.0
-}}
-Devuelve SOLO JSON (si puedes). Si no, incluye el JSON en alguna parte del texto.
-"""
+# --- LLM helper ---
+def call_llm(prompt: str, api_key: str, max_words: int = 120):
     try:
-        raw = call_grok(prompt)
-        parsed = safe_load_json_from_text(raw)
-        if parsed is None:
-            print("⚠️ No se pudo extraer JSON de la evaluación. Texto devuelto:", raw[:200])
-            return {"similarity_score": 0.0, "quality_score": 0.0, "completeness_score": 0.0}
-        def to_float(v):
-            try:
-                return float(v)
-            except:
-                return 0.0
-        print("✅ [Checkpoint] Evaluación completada")
-        return {
-            "similarity_score": to_float(parsed.get("similarity_score", 0.0)),
-            "quality_score": to_float(parsed.get("quality_score", 0.0)),
-            "completeness_score": to_float(parsed.get("completeness_score", 0.0)),
-        }
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key
+        )
+
+        full_prompt = f"{prompt}\n\nPlease answer in {max_words} words or less."
+
+        completion = client.chat.completions.create(
+            model="openai/gpt-oss-20b:free",
+            messages=[{"role": "user", "content": full_prompt}],
+            extra_headers={
+                "HTTP-Referer": "https://tu-sistema.local",
+                "X-Title": "Prueba LLM"
+            },
+            extra_body={},
+            timeout=60
+        )
+
+        return completion.choices[0].message.content.strip()
     except Exception as e:
-        print(f"❌ Error en evaluate_response: {e}")
-        return {"similarity_score": 0.0, "quality_score": 0.0, "completeness_score": 0.0}
+        logger.exception("Error llamando al modelo LLM")
+        raise HTTPException(status_code=500, detail=f"Error LLM: {e}")
 
-def calculate_overall(sim, qual, comp):
-    return round(sim * 0.5 + qual * 0.3 + comp * 0.2, 6)
+# --- Evaluación simple ---
+def evaluate_response(human_answer, llm_answer):
+    try:
+        sim_score = 1.0 if human_answer.strip().lower() == llm_answer.strip().lower() else 0.5
+        quality_score = 0.8
+        completeness_score = 0.9
+        return sim_score, quality_score, completeness_score
+    except:
+        return 0.0, 0.0, 0.0
 
-# --- Endpoint ---
+# --- Guardar en JSON local en la misma carpeta que app.py ---
+def save_response_json(data: dict, filename="responses.json"):
+    try:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(base_path, filename)
+
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                all_data = json.load(f)
+        else:
+            all_data = []
+
+        all_data.append(data)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(all_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"No se pudo guardar respuesta en JSON: {e}")
+
+# --- Endpoint POST para recibir pregunta, generar respuesta y guardar ---
 @app.post("/evaluate")
 def evaluate_question(req: QuestionRequest):
-    print(f"⏳ [Checkpoint] Recibida petición para id={req.id}")
+    # 1️⃣ Verificar API Keys
+    api_keys = [k.strip() for k in os.getenv("OPENROUTER_API_KEY", "").split(",") if k.strip()]
+    if not api_keys:
+        logger.error("No se encontraron API keys")
+        raise HTTPException(status_code=500, detail="API keys no encontradas")
+    key_to_use = api_keys[0]
+
+    # 2️⃣ Llamar al LLM
+    logger.info(f"Pregunta recibida: {req.question_text[:60]}...")
+    llm_answer = call_llm(req.question_text, key_to_use)
+    logger.info(f"Respuesta LLM: {llm_answer[:100]}...")
+
+    # 3️⃣ Evaluar respuesta
+    sim, qual, comp = evaluate_response(req.human_answer, llm_answer)
+    overall = round(sim * 0.5 + qual * 0.3 + comp * 0.2, 6)
+
+    # 4️⃣ Guardar en DB
+    eval_id = None
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         with conn.cursor() as cur:
-            print("⏳ [Checkpoint] Conectado a la DB, buscando pregunta...")
-            cur.execute("SELECT id, question_text, human_answer FROM questions WHERE id=%s", (req.id,))
-            row = cur.fetchone()
-            if not row:
-                print(f"❌ [Checkpoint] Pregunta con id={req.id} no encontrada")
-                raise HTTPException(status_code=404, detail=f"No se encontró la pregunta con id {req.id}")
-            qid, question_text, human_answer = row
-            print(f"✅ [Checkpoint] Pregunta encontrada: {question_text[:50]}...")
-
-            # 1️⃣ Generar llm_answer
-            llm_answer = call_grok(question_text)
-
-            # 2️⃣ Evaluar con scorer
-            scores = evaluate_response(human_answer, llm_answer)
-            sim = scores["similarity_score"]
-            qual = scores["quality_score"]
-            comp = scores["completeness_score"]
-            overall = calculate_overall(sim, qual, comp)
-
-            # 3️⃣ Actualizar DB
-            print("⏳ [Checkpoint] Actualizando DB con resultados...")
             cur.execute("""
-                UPDATE questions
-                SET llm_answer=%s,
-                    similarity_score=%s,
-                    quality_score=%s,
-                    completeness_score=%s,
-                    overall_score=%s,
-                    evaluated_at=%s
-                WHERE id=%s
-            """, (llm_answer, sim, qual, comp, overall, datetime.utcnow(), qid))
+                INSERT INTO evaluations (question_text, human_answer, llm_answer,
+                                         similarity_score, quality_score,
+                                         completeness_score, overall_score,
+                                         evaluated_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+            """, (req.question_text, req.human_answer, llm_answer,
+                  sim, qual, comp, overall, datetime.utcnow()))
+            eval_id = cur.fetchone()[0]
             conn.commit()
-            print(f"✅ [Checkpoint] DB actualizada para id={qid}")
-
-            # 4️⃣ Devolver JSON completo
-            response = {
-                "id": qid,
-                "question_text": question_text,
-                "human_answer": human_answer,
-                "llm_answer": llm_answer,
-                "similarity_score": sim,
-                "quality_score": qual,
-                "completeness_score": comp,
-                "overall_score": overall,
-                "evaluated_at": datetime.utcnow().isoformat()
-            }
-            print("✅ [Checkpoint] Respuesta enviada al cliente")
-            return response
-
-    except psycopg2.OperationalError as e:
-        print(f"❌ [Checkpoint] Error de conexión a DB: {e}")
-        raise HTTPException(status_code=500, detail=f"Error de conexión a DB: {e}")
-    except RuntimeError as e:
-        print(f"❌ [Checkpoint] RuntimeError: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            logger.info(f"💾 Evaluación guardada en DB con id={eval_id}")
+    except Exception as e:
+        logger.exception("Error guardando evaluación en DB")
+        raise HTTPException(status_code=500, detail=f"Error DB: {e}")
     finally:
         if 'conn' in locals():
             conn.close()
-            print("⏳ [Checkpoint] Conexión a DB cerrada")
+
+    # 5️⃣ Guardar también en JSON local
+    response_data = {
+        "id": eval_id,
+        "question_text": req.question_text,
+        "human_answer": req.human_answer,
+        "llm_answer": llm_answer,
+        "similarity_score": sim,
+        "quality_score": qual,
+        "completeness_score": comp,
+        "overall_score": overall,
+        "evaluated_at": datetime.utcnow().isoformat()
+    }
+    save_response_json(response_data)
+
+    # 6️⃣ Devolver JSON con resultados
+    return response_data

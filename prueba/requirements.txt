@@ -6,4 +6,5 @@ python-dotenv
 tqdm
 fastapi
 uvicorn
+openai>=1.43.0
 
