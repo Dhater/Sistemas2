@@ -143,6 +143,9 @@ services:
       - "9092:9092"
     networks:
       - yahoo_network
+    volumes:
+      - ./kafka-init.sh:/usr/local/bin/kafka-init.sh
+    command: ["/bin/bash", "-c", "(/usr/local/bin/kafka-init.sh &) && /etc/confluent/docker/run"]
 
 
   flink-jobmanager:

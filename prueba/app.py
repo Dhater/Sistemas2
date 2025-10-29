@@ -10,7 +10,7 @@ from openai import OpenAI
 from confluent_kafka import Consumer, Producer
 from zoneinfo import ZoneInfo
 
-# --- Helper para obtener datetime en hora chilena ---
+# --- Helper para datetime chileno ---
 def get_chile_time():
     return datetime.now(ZoneInfo("America/Santiago"))
 
@@ -48,33 +48,18 @@ def call_llm(prompt: str, api_key: str, model="minimax/minimax-m2:free"):
         logger.exception("Error llamando al modelo LLM")
         raise HTTPException(status_code=500, detail=f"Error LLM: {e}")
 
-# --- Generar respuesta LLM concisa ---
 def generate_llm_answer(question_text, api_key):
-    prompt = f"""
-Responde a la pregunta de manera **concisa y directa**.
-Pregunta:
-{question_text}
-"""
+    prompt = f"Responde de manera concisa:\n{question_text}"
     return call_llm(prompt, api_key)
 
-# --- Evaluación del modelo respecto a la respuesta humana ---
 def evaluate_response_with_llm(llm_answer, human_answer, api_key):
     prompt = f"""
-Evalúa la respuesta del MODELO comparada con la respuesta HUMANA.
-
-### Respuesta del modelo
+Evalúa la respuesta del MODELO comparada con la HUMANA.
+### Modelo
 {llm_answer}
-
-### Respuesta humana
+### Humana
 {human_answer}
-
-### Instrucciones
-Devuelve un JSON con estos campos entre 0 y 1:
-- similarity_score
-- quality_score
-- completeness_score
-
-Solo devuelve el JSON, sin explicaciones.
+Devuelve un JSON: similarity_score, quality_score, completeness_score
 """
     result_text = call_llm(prompt, api_key)
     try:
@@ -84,11 +69,9 @@ Solo devuelve el JSON, sin explicaciones.
         comp = float(data.get("completeness_score", 0.5))
     except Exception:
         sim, qual, comp = 0.5, 0.5, 0.5
-
     overall = round(sim * 0.5 + qual * 0.3 + comp * 0.2, 6)
     return sim, qual, comp, overall
 
-# --- Guardar JSON local solo si success ---
 def save_response_json(data: dict, filename="responses.json"):
     base_path = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(base_path, filename)
@@ -101,11 +84,11 @@ def save_response_json(data: dict, filename="responses.json"):
         all_data.append(data)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(all_data, f, ensure_ascii=False, indent=2)
-        logger.info(f"✅ Guardada respuesta success id={data['question_id']} en {filename}")
+        logger.info(f"✅ Guardada respuesta success id={data['question_id']}")
     except Exception as e:
-        logger.warning(f"No se pudo guardar respuesta en JSON: {e}")
+        logger.warning(f"No se pudo guardar JSON: {e}")
 
-# --- Endpoint principal HTTP ---
+# --- Endpoint HTTP ---
 @app.post("/evaluate")
 def evaluate_question(req: QuestionRequest):
     api_keys = [k.strip() for k in os.getenv("OPENROUTER_API_KEY", "").split(",") if k.strip()]
@@ -113,27 +96,21 @@ def evaluate_question(req: QuestionRequest):
         raise HTTPException(status_code=500, detail="No se encontraron API keys")
     key_to_use = api_keys[0]
 
-    # --- Buscar primero si ya existe una evaluación satisfactoria ---
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT question_text, human_answer, llm_answer,
                     similarity_score, quality_score, completeness_score, overall_score
-                FROM questions
-                WHERE id=%s
+                FROM questions WHERE id=%s
             """, (req.id,))
             row = cur.fetchone()
-
             if not row:
                 raise HTTPException(status_code=404, detail=f"No se encontró la pregunta con id {req.id}")
+            question_text, human_answer, existing_llm_answer, existing_sim, existing_qual, existing_comp, existing_overall = row
 
-            (question_text, human_answer, existing_llm_answer,
-            existing_sim, existing_qual, existing_comp, existing_overall) = row
-
-            # ♻️ Si ya existe una buena respuesta, reutilizarla
             if existing_llm_answer and existing_overall and existing_overall >= 0.7:
-                logger.info(f"♻️ Reutilizando respuesta previa para id={req.id} (overall={existing_overall})")
+                logger.info(f"♻️ Reutilizando respuesta previa id={req.id}")
                 response_data = {
                     "id": req.id,
                     "question_id": req.id,
@@ -148,38 +125,12 @@ def evaluate_question(req: QuestionRequest):
                 }
                 save_response_json(response_data)
                 return response_data
-    except Exception as e:
-        logger.exception("Error consultando DB")
-        raise HTTPException(status_code=500, detail=f"Error DB: {e}")
     finally:
         if 'conn' in locals():
             conn.close()
 
-
-    # --- Si no hay respuesta buena, generar y evaluar ---
     llm_answer = generate_llm_answer(question_text, key_to_use)
     sim, qual, comp, overall = evaluate_response_with_llm(llm_answer, human_answer, key_to_use)
-
-    # --- Guardar en DB ---
-    try:
-        conn = psycopg2.connect(**DB_CONFIG)
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE questions
-                SET llm_answer=%s,
-                    similarity_score=%s,
-                    quality_score=%s,
-                    completeness_score=%s,
-                    overall_score=%s,
-                    evaluated_at=%s
-                WHERE id=%s
-            """, (llm_answer, sim, qual, comp, overall, get_chile_time(), req.id))
-            conn.commit()
-    finally:
-        if 'conn' in locals():
-            conn.close()
-
-    # --- Preparar salida ---
     response_data = {
         "id": req.id,
         "question_id": req.id,
@@ -193,68 +144,20 @@ def evaluate_question(req: QuestionRequest):
         "evaluated_at": get_chile_time().isoformat()
     }
 
-    # --- Guardar y retornar ---
     if overall >= 0.7:
-        save_response_json(response_data)
-        return response_data
-    else:
-        logger.info(f"❌ Respuesta id={req.id} descartada por overall_score={overall}")
-        return {"message": "Overall score below threshold", "overall_score": overall}
-
-
-# --- Kafka Consumer/Producer setup ---
-KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
-TOPIC_PREGUNTAS = "preguntas"
-TOPIC_RESPUESTAS_OK = "respuestas_exitosas"
-TOPIC_RESPUESTAS_FAIL = "respuestas_fallidas"
-
-producer = Producer({'bootstrap.servers': KAFKA_BROKER})
-consumer = Consumer({
-    'bootstrap.servers': KAFKA_BROKER,
-    'group.id': 'api_client_group',
-    'auto.offset.reset': 'earliest'
-})
-
-MAX_RETRIES = 1
-
-def kafka_worker():
-    consumer.subscribe([TOPIC_PREGUNTAS])
-    logger.info(f"🎧 Kafka consumer escuchando el tópico '{TOPIC_PREGUNTAS}'...")
-
-    while True:
-        msg = consumer.poll(1.0)
-        if msg is None:
-            continue
-        if msg.error():
-            logger.error(f"Error en consumo: {msg.error()}")
-            continue
-
         try:
-            payload = json.loads(msg.value().decode('utf-8'))
-            qid = payload["id"]
-            retries = payload.get("retries", 0)
-
-            result = evaluate_question(QuestionRequest(id=qid))
-
-            if result.get("overall_score", 0) >= 0.7:
-                producer.produce(TOPIC_RESPUESTAS_OK, json.dumps(result).encode('utf-8'))
-            else:
-                if retries < MAX_RETRIES:
-                    payload["retries"] = retries + 1
-                    producer.produce(TOPIC_PREGUNTAS, json.dumps(payload).encode('utf-8'))
-                    logger.info(f"🔁 Reintentando pregunta {qid} (intento {payload['retries']})")
-                else:
-                    producer.produce(TOPIC_RESPUESTAS_FAIL, json.dumps(result).encode('utf-8'))
-                    logger.info(f"❌ Pregunta {qid} descartada tras {MAX_RETRIES} intentos")
-
-            producer.flush()
-
-        except Exception as e:
-            logger.error(f"❌ Error procesando mensaje de Kafka: {e}")
-
-# --- Ejecutar consumidor Kafka en segundo plano ---
-@app.on_event("startup")
-def start_kafka_background_thread():
-    thread = threading.Thread(target=kafka_worker, daemon=True)
-    thread.start()
-    logger.info("🚀 Hilo de Kafka iniciado en segundo plano")
+            conn = psycopg2.connect(**DB_CONFIG)
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE questions
+                    SET llm_answer=%s, similarity_score=%s, quality_score=%s, completeness_score=%s,
+                        overall_score=%s, evaluated_at=%s
+                    WHERE id=%s
+                """, (llm_answer, sim, qual, comp, overall, get_chile_time(), req.id))
+                conn.commit()
+        finally:
+            if 'conn' in locals():
+                conn.close()
+        save_response_json(response_data)
+        logger.info(f"✅ Guardada respuesta id={req.id}")
+    return response_data

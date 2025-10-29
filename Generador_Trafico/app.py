@@ -1,16 +1,15 @@
 import os
 import time
-import numpy as np
 import json
+import numpy as np
 import requests
 from datetime import datetime
-from confluent_kafka import Producer, Consumer, KafkaException, KafkaError
+from confluent_kafka import Producer, KafkaException
 
-# --- Configuración de API ---
+# --- Configuración de API y Kafka ---
 API_PORT = 8000
 API_URL = f"http://API_CLIENT:{API_PORT}/evaluate"
 
-# --- Configuración de Kafka ---
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 TOPIC_PREGUNTAS = os.getenv("KAFKA_TOPIC_PREGUNTAS", "preguntas")
 
@@ -53,6 +52,7 @@ class TrafficGenerator:
         self.in_process = set()  # IDs que están siendo procesadas actualmente
 
     def sample_qid(self):
+        """Genera un ID de pregunta según la distribución seleccionada"""
         if self.distribution == "uniform":
             return int(np.random.randint(self.start_id, self.end_id + 1))
         elif self.distribution == "normal":
@@ -66,6 +66,7 @@ class TrafficGenerator:
             return int(np.random.random() * (self.end_id - self.start_id + 1)) + self.start_id
 
     def get_from_api(self, qid, max_retries=3):
+        """Llama a la API para obtener la evaluación de la pregunta"""
         payload = {"id": qid}
         for attempt in range(1, max_retries + 1):
             try:
@@ -79,6 +80,7 @@ class TrafficGenerator:
         return {"request": payload, "response": None}
 
     def simulate_traffic(self, batch_size=5):
+        """Simula el tráfico enviando IDs a Kafka y recolectando resultados"""
         # Agregar inicialmente batch de preguntas
         for _ in range(batch_size):
             qid = self.sample_qid()
@@ -106,8 +108,8 @@ class TrafficGenerator:
                     self.failed[qid] = result
                     self.in_process.discard(qid)
 
-                print(f"ID={qid} | Overall={overall} | Pending={len(self.pending)} | In process={len(self.in_process)}")
-            time.sleep(1)  # Pequeña espera para no saturar la API
+                print(f"ID={qid} | Overall={overall:.2f} | Pending={len(self.pending)} | In process={len(self.in_process)}")
+            time.sleep(1)  # Espera para no saturar la API
 
         print("✅ Todas las preguntas procesadas")
         return {
@@ -117,6 +119,7 @@ class TrafficGenerator:
         }
 
 def convert_datetimes(obj):
+    """Convierte todos los datetime a ISO string"""
     if isinstance(obj, dict):
         return {k: convert_datetimes(v) for k, v in obj.items()}
     elif isinstance(obj, list):

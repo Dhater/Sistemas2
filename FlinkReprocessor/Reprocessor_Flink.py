@@ -10,7 +10,7 @@ env = StreamExecutionEnvironment.get_execution_environment()
 consumer_fail = FlinkKafkaConsumer(
     topics='respuestas_fallidas',
     deserialization_schema=SimpleStringSchema(),
-    properties={'bootstrap.servers': BROKER, 'group.id': 'flink_group'}
+    properties={'bootstrap.servers': BROKER, 'group.id': 'flink_reprocessor_group'}
 )
 
 producer_preguntas = FlinkKafkaProducer(
@@ -33,4 +33,4 @@ def reprocess_fails(value):
 stream = env.add_source(consumer_fail)
 stream.map(reprocess_fails).filter(lambda v: v is not None).add_sink(producer_preguntas)
 
-env.execute("Reprocesador de Respuestas Fallidas")
+env.execute("Flink Reprocessor")
