@@ -2,13 +2,17 @@ import os
 import logging
 import json
 import threading
-import time
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import psycopg2
 from openai import OpenAI
 from confluent_kafka import Consumer, Producer
+from zoneinfo import ZoneInfo
+
+# --- Helper para obtener datetime en hora chilena ---
+def get_chile_time():
+    return datetime.now(ZoneInfo("America/Santiago"))
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO)
@@ -48,8 +52,6 @@ def call_llm(prompt: str, api_key: str, model="minimax/minimax-m2:free"):
 def generate_llm_answer(question_text, api_key):
     prompt = f"""
 Responde a la pregunta de manera **concisa y directa**.
-No escribas explicaciones largas si no son necesarias.
-
 Pregunta:
 {question_text}
 """
@@ -86,7 +88,7 @@ Solo devuelve el JSON, sin explicaciones.
     overall = round(sim * 0.5 + qual * 0.3 + comp * 0.2, 6)
     return sim, qual, comp, overall
 
-# --- Guardar JSON local ---
+# --- Guardar JSON local solo si success ---
 def save_response_json(data: dict, filename="responses.json"):
     base_path = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(base_path, filename)
@@ -99,6 +101,7 @@ def save_response_json(data: dict, filename="responses.json"):
         all_data.append(data)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(all_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"✅ Guardada respuesta success id={data['question_id']} en {filename}")
     except Exception as e:
         logger.warning(f"No se pudo guardar respuesta en JSON: {e}")
 
@@ -110,7 +113,7 @@ def evaluate_question(req: QuestionRequest):
         raise HTTPException(status_code=500, detail="No se encontraron API keys")
     key_to_use = api_keys[0]
 
-    # 1️⃣ Obtener pregunta y respuesta humana de DB
+    # Obtener pregunta y respuesta humana de DB
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         with conn.cursor() as cur:
@@ -126,13 +129,11 @@ def evaluate_question(req: QuestionRequest):
         if 'conn' in locals():
             conn.close()
 
-    # 2️⃣ Generar respuesta LLM concisa
+    # Generar respuesta LLM y evaluar
     llm_answer = generate_llm_answer(question_text, key_to_use)
-
-    # 3️⃣ Evaluar modelo respecto a humano
     sim, qual, comp, overall = evaluate_response_with_llm(llm_answer, human_answer, key_to_use)
 
-    # 4️⃣ Guardar en DB
+    # Guardar en DB siempre
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         with conn.cursor() as cur:
@@ -145,16 +146,15 @@ def evaluate_question(req: QuestionRequest):
                     overall_score=%s,
                     evaluated_at=%s
                 WHERE id=%s
-            """, (llm_answer, sim, qual, comp, overall, datetime.utcnow(), req.id))
+            """, (llm_answer, sim, qual, comp, overall, get_chile_time(), req.id))
             conn.commit()
-            eval_id = req.id
     finally:
         if 'conn' in locals():
             conn.close()
 
-    # 5️⃣ Guardar JSON local
+    # Solo guardar JSON y retornar si success
     response_data = {
-        "id": eval_id,
+        "id": req.id,
         "question_id": req.id,
         "question_text": question_text,
         "human_answer": human_answer,
@@ -163,12 +163,15 @@ def evaluate_question(req: QuestionRequest):
         "quality_score": qual,
         "completeness_score": comp,
         "overall_score": overall,
-        "evaluated_at": datetime.utcnow().isoformat()
+        "evaluated_at": get_chile_time().isoformat()
     }
-    save_response_json(response_data)
 
-    return response_data
-
+    if overall >= 0.7:
+        save_response_json(response_data)
+        return response_data
+    else:
+        logger.info(f"❌ Respuesta id={req.id} descartada por overall_score={overall}")
+        return {"message": "Overall score below threshold", "overall_score": overall}
 
 # --- Kafka Consumer/Producer setup ---
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
@@ -177,14 +180,13 @@ TOPIC_RESPUESTAS_OK = "respuestas_exitosas"
 TOPIC_RESPUESTAS_FAIL = "respuestas_fallidas"
 
 producer = Producer({'bootstrap.servers': KAFKA_BROKER})
-
 consumer = Consumer({
     'bootstrap.servers': KAFKA_BROKER,
     'group.id': 'api_client_group',
     'auto.offset.reset': 'earliest'
 })
 
-MAX_RETRIES = 3
+MAX_RETRIES = 1
 
 def kafka_worker():
     consumer.subscribe([TOPIC_PREGUNTAS])
@@ -205,7 +207,7 @@ def kafka_worker():
 
             result = evaluate_question(QuestionRequest(id=qid))
 
-            if result["overall_score"] >= 0.7:
+            if result.get("overall_score", 0) >= 0.7:
                 producer.produce(TOPIC_RESPUESTAS_OK, json.dumps(result).encode('utf-8'))
             else:
                 if retries < MAX_RETRIES:
@@ -220,7 +222,6 @@ def kafka_worker():
 
         except Exception as e:
             logger.error(f"❌ Error procesando mensaje de Kafka: {e}")
-
 
 # --- Ejecutar consumidor Kafka en segundo plano ---
 @app.on_event("startup")
