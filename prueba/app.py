@@ -113,15 +113,41 @@ def evaluate_question(req: QuestionRequest):
         raise HTTPException(status_code=500, detail="No se encontraron API keys")
     key_to_use = api_keys[0]
 
-    # Obtener pregunta y respuesta humana de DB
+    # --- Buscar primero si ya existe una evaluación satisfactoria ---
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         with conn.cursor() as cur:
-            cur.execute("SELECT question_text, human_answer FROM questions WHERE id=%s", (req.id,))
+            cur.execute("""
+                SELECT question_text, human_answer, llm_answer,
+                    similarity_score, quality_score, completeness_score, overall_score
+                FROM questions
+                WHERE id=%s
+            """, (req.id,))
             row = cur.fetchone()
+
             if not row:
                 raise HTTPException(status_code=404, detail=f"No se encontró la pregunta con id {req.id}")
-            question_text, human_answer = row
+
+            (question_text, human_answer, existing_llm_answer,
+            existing_sim, existing_qual, existing_comp, existing_overall) = row
+
+            # ♻️ Si ya existe una buena respuesta, reutilizarla
+            if existing_llm_answer and existing_overall and existing_overall >= 0.7:
+                logger.info(f"♻️ Reutilizando respuesta previa para id={req.id} (overall={existing_overall})")
+                response_data = {
+                    "id": req.id,
+                    "question_id": req.id,
+                    "question_text": question_text,
+                    "human_answer": human_answer,
+                    "llm_answer": existing_llm_answer,
+                    "similarity_score": existing_sim,
+                    "quality_score": existing_qual,
+                    "completeness_score": existing_comp,
+                    "overall_score": existing_overall,
+                    "evaluated_at": get_chile_time().isoformat()
+                }
+                save_response_json(response_data)
+                return response_data
     except Exception as e:
         logger.exception("Error consultando DB")
         raise HTTPException(status_code=500, detail=f"Error DB: {e}")
@@ -129,11 +155,12 @@ def evaluate_question(req: QuestionRequest):
         if 'conn' in locals():
             conn.close()
 
-    # Generar respuesta LLM y evaluar
+
+    # --- Si no hay respuesta buena, generar y evaluar ---
     llm_answer = generate_llm_answer(question_text, key_to_use)
     sim, qual, comp, overall = evaluate_response_with_llm(llm_answer, human_answer, key_to_use)
 
-    # Guardar en DB siempre
+    # --- Guardar en DB ---
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         with conn.cursor() as cur:
@@ -152,7 +179,7 @@ def evaluate_question(req: QuestionRequest):
         if 'conn' in locals():
             conn.close()
 
-    # Solo guardar JSON y retornar si success
+    # --- Preparar salida ---
     response_data = {
         "id": req.id,
         "question_id": req.id,
@@ -166,12 +193,14 @@ def evaluate_question(req: QuestionRequest):
         "evaluated_at": get_chile_time().isoformat()
     }
 
+    # --- Guardar y retornar ---
     if overall >= 0.7:
         save_response_json(response_data)
         return response_data
     else:
         logger.info(f"❌ Respuesta id={req.id} descartada por overall_score={overall}")
         return {"message": "Overall score below threshold", "overall_score": overall}
+
 
 # --- Kafka Consumer/Producer setup ---
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
